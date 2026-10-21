@@ -119,6 +119,30 @@ func TestGetStatsSummarySkipsFailedPod(t *testing.T) {
 	assert.NotContains(t, names, "pod-bad")
 }
 
+// The node reports the host's own CPU time and memory, so metrics-server can show it in kubectl top
+// even with no pod running; the resource endpoint carries both node series.
+func TestGetMetricsResourceReportsHostNodeUsage(t *testing.T) {
+	p := metrics.NewMacOSVZPodMetricsProvider("test-node", podListerWith(t), mocks.NewVzClientInterface(t))
+
+	summary, err := p.GetStatsSummary(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, summary.Node.CPU)
+	require.NotNil(t, summary.Node.CPU.UsageCoreNanoSeconds)
+	assert.Positive(t, *summary.Node.CPU.UsageCoreNanoSeconds)
+	require.NotNil(t, summary.Node.Memory)
+	require.NotNil(t, summary.Node.Memory.WorkingSetBytes)
+	assert.Positive(t, *summary.Node.Memory.WorkingSetBytes)
+
+	families, err := p.GetMetricsResource(context.Background())
+	require.NoError(t, err)
+	names := map[string]struct{}{}
+	for _, f := range families {
+		names[f.GetName()] = struct{}{}
+	}
+	assert.Contains(t, names, "node_cpu_usage_seconds_total")
+	assert.Contains(t, names, "node_memory_working_set_bytes")
+}
+
 // Zero ContainerStats.StartTime (provider tracks no per-container start) must be
 // backfilled from pod CreationTimestamp so summary doesn't serialize null.
 func TestGetStatsSummarySetsContainerStartTime(t *testing.T) {

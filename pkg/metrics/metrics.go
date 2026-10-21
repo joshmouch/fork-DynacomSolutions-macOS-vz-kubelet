@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -15,7 +16,10 @@ import (
 	stats "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 
 	dto "github.com/prometheus/client_model/go"
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/mem"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	corev1listers "k8s.io/client-go/listers/core/v1"
@@ -155,6 +159,7 @@ func (p *MacOSVZPodMetricsProvider) GetStatsSummary(ctx context.Context) (summar
 	s.Node = stats.NodeStats{
 		NodeName: p.nodeName,
 	}
+	s.Node.CPU, s.Node.Memory = hostUsage(ctx)
 
 	// Edge-triggered skip logging, single-threaded under metricsSync: log on the
 	// rising (newly failing) and falling (recovered) edges only. Rebuild the set from
@@ -187,6 +192,31 @@ func (p *MacOSVZPodMetricsProvider) GetStatsSummary(ctx context.Context) (summar
 	}
 
 	return &s, nil
+}
+
+// hostUsage reads this Mac's own CPU time and memory: the node's usage, measured on the same host whose
+// cores and memory getNodeCapacity reports as the node's capacity. A failed read leaves its half nil, so
+// that series is absent from the scrape rather than reported as zero.
+func hostUsage(ctx context.Context) (*stats.CPUStats, *stats.MemoryStats) {
+	now := metav1.NewTime(time.Now())
+
+	var cpuStats *stats.CPUStats
+	if t, err := cpu.TimesWithContext(ctx, false); err != nil || len(t) != 1 {
+		log.G(ctx).WithError(err).Warn("failed to read host cpu times for node stats")
+	} else {
+		busy := uint64((t[0].Total() - t[0].Idle - t[0].Iowait) * float64(time.Second))
+		cpuStats = &stats.CPUStats{Time: now, UsageCoreNanoSeconds: &busy}
+	}
+
+	var memoryStats *stats.MemoryStats
+	if v, err := mem.VirtualMemoryWithContext(ctx); err != nil {
+		log.G(ctx).WithError(err).Warn("failed to read host memory for node stats")
+	} else {
+		used, available := v.Used, v.Available
+		memoryStats = &stats.MemoryStats{Time: now, WorkingSetBytes: &used, UsageBytes: &used, AvailableBytes: &available}
+	}
+
+	return cpuStats, memoryStats
 }
 
 // GetMetricsResource gets the metrics for the node, including running pods
