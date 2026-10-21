@@ -326,14 +326,15 @@ func run(ctx context.Context, c kubernetes.Interface) error {
 		}
 	}()
 
-	node, err := nodeauth.NewNode(nodeName, func(cfg nodeutil.ProviderConfig) (nodeutil.Provider, node.NodeProvider, error) {
-		if port := os.Getenv("KUBELET_PORT"); port != "" {
-			kubeletPort, err := strconv.ParseInt(port, 10, 32)
-			if err != nil {
-				return nil, nil, err
-			}
-			listenPort = int(kubeletPort)
+	if port := os.Getenv("KUBELET_PORT"); port != "" {
+		kubeletPort, err := strconv.ParseInt(port, 10, 32)
+		if err != nil {
+			return fmt.Errorf("invalid KUBELET_PORT %q: %w", port, err)
 		}
+		listenPort = int(kubeletPort)
+	}
+
+	node, err := nodeauth.NewNode(nodeName, func(cfg nodeutil.ProviderConfig) (nodeutil.Provider, node.NodeProvider, error) {
 		platform, _, _, err := host.PlatformInformationWithContext(ctx)
 		if err != nil {
 			return nil, nil, err
