@@ -2,7 +2,6 @@ package downloader
 
 import (
 	"context"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -68,7 +67,9 @@ func (m *Manager) vmDirs() (dirs []string) {
 		return nil
 	}
 	for _, r := range m.inUse() {
-		dirs = append(dirs, filepath.Join(m.cachePath, "blobs", convertToPath(r)))
+		if dir, err := ImageDir(m.cachePath, r); err == nil {
+			dirs = append(dirs, dir)
+		}
 	}
 	return dirs
 }
@@ -84,7 +85,9 @@ func (m *Manager) inUseDirs() (dirs []string) { // called under the guard lock, 
 		return true
 	})
 	for _, r := range refs {
-		dirs = append(dirs, filepath.Join(m.cachePath, "blobs", convertToPath(r)))
+		if dir, err := ImageDir(m.cachePath, r); err == nil {
+			dirs = append(dirs, dir)
+		}
 	}
 	return dirs
 }
