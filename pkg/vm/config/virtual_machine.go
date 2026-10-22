@@ -193,6 +193,38 @@ func attachDeviceConfigurations(ctx context.Context, config *vz.VirtualMachineCo
 		audioDeviceConfig,
 	})
 
+	return attachTartCompanionDevices(config)
+}
+
+// attachTartCompanionDevices adds the devices Tart gives every VM and this provider did not: virtio
+// entropy, a virtio console with one named port and a vsock device. Images built for Tart (the
+// Cirrus Labs bases) are booted and tested with them. The Cirrus Sonoma base (14.8.7) booted on
+// a macOS 26.6 host without them restarted itself every ~15 s ("System shutdown initiated by
+// kernel"), while the same disk, NVRAM, hardware model and machine identifier stayed up under
+// Tart, as root and as a user (2026-10-22).
+func attachTartCompanionDevices(config *vz.VirtualMachineConfiguration) error {
+	entropy, err := vz.NewVirtioEntropyDeviceConfiguration()
+	if err != nil {
+		return fmt.Errorf("failed to create entropy device configuration: %w", err)
+	}
+	config.SetEntropyDevicesVirtualMachineConfiguration([]*vz.VirtioEntropyDeviceConfiguration{entropy})
+
+	console, err := vz.NewVirtioConsoleDeviceConfiguration()
+	if err != nil {
+		return fmt.Errorf("failed to create console device configuration: %w", err)
+	}
+	port, err := vz.NewVirtioConsolePortConfiguration(vz.WithVirtioConsolePortConfigurationName("macos-vz-kubelet"))
+	if err != nil {
+		return fmt.Errorf("failed to create console port configuration: %w", err)
+	}
+	console.SetVirtioConsolePortConfiguration(0, port)
+	config.SetConsoleDevicesVirtualMachineConfiguration([]vz.ConsoleDeviceConfiguration{console})
+
+	socket, err := vz.NewVirtioSocketDeviceConfiguration()
+	if err != nil {
+		return fmt.Errorf("failed to create socket device configuration: %w", err)
+	}
+	config.SetSocketDevicesVirtualMachineConfiguration([]vz.SocketDeviceConfiguration{socket})
 	return nil
 }
 
@@ -203,7 +235,7 @@ func createGraphicsDeviceConfiguration() (*vz.MacGraphicsDeviceConfiguration, er
 	if err != nil {
 		return nil, err
 	}
-	graphicsDisplayConfig, err := vz.NewMacGraphicsDisplayConfiguration(1920, 1200, 80)
+	graphicsDisplayConfig, err := vz.NewMacGraphicsDisplayConfiguration(1920, 1200, 72) // Tart's pixel density
 	if err != nil {
 		return nil, err
 	}
