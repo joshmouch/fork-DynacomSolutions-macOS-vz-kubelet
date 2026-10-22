@@ -282,18 +282,14 @@ func createAudioDeviceConfiguration() (*vz.VirtioSoundDeviceConfiguration, error
 	if err != nil {
 		return nil, fmt.Errorf("failed to create sound device configuration: %w", err)
 	}
-	inputStream, err := vz.NewVirtioSoundDeviceHostInputStreamConfiguration()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create input stream configuration: %w", err)
-	}
+	// Output only: a host microphone input makes the VM process ask TCC for microphone access,
+	// which a root daemon can never be granted (no prompt to answer). A CI guest has no use for
+	// the host microphone; Tart's audio-off mode likewise attaches a speaker and no input.
 	outputStream, err := vz.NewVirtioSoundDeviceHostOutputStreamConfiguration()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create output stream configuration: %w", err)
 	}
-	audioConfig.SetStreams(
-		inputStream,
-		outputStream,
-	)
+	audioConfig.SetStreams(outputStream)
 	return audioConfig, nil
 }
 
