@@ -273,15 +273,6 @@ func toORASCredential(creds resource.RegistryCredentials) auth.Credential {
 	}
 }
 
-// convertToPath converts an OCI image reference to a path format by replacing the colon with a slash.
-func convertToPath(s string) string {
-	parts := strings.Split(s, ":")
-	if len(parts) < 2 {
-		return s
-	}
-	return strings.Join(parts, "/")
-}
-
 // isLocalhostOrLocalIP returns true if the host is localhost or a local IP address.
 func isLocalhostOrLocalIP(host string) bool {
 	host = strings.Split(host, ":")[0] // stripping port if present

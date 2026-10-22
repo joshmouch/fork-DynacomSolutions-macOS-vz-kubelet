@@ -23,14 +23,33 @@ import (
 const LocalManifestName = ".local-manifest.json"
 
 // ImageDir is shared by the importer and downloader to keep reference paths identical.
+//
+// A digest reference (repo@sha256:...) with no directory of its own resolves to the local-only
+// tag of the same repository whose manifest has that digest, so a Pod can pin an image that was
+// built or imported on this node (build-image --local, import-tart --local) by digest.
 func ImageDir(storePath, ref string) (string, error) {
-	if _, err := remote.NewRepository(ref); err != nil {
+	repo, err := remote.NewRepository(ref)
+	if err != nil {
 		return "", err
 	}
 	root := filepath.Join(storePath, "blobs")
 	dir := filepath.Join(root, strings.ReplaceAll(ref, ":", "/"))
 	if rel, err := filepath.Rel(root, dir); err != nil || !filepath.IsLocal(rel) || rel == "." {
 		return "", fmt.Errorf("image reference %q maps outside the cache", ref)
+	}
+	if repo.Reference.ValidateReferenceAsDigest() != nil {
+		return dir, nil
+	}
+	if _, err := os.Lstat(dir); err == nil {
+		return dir, nil
+	}
+	repoDir := filepath.Join(root, strings.ReplaceAll(repo.Reference.Registry+"/"+repo.Reference.Repository, ":", "/"))
+	tags, _ := os.ReadDir(repoDir)
+	for _, tag := range tags {
+		tagDir := filepath.Join(repoDir, tag.Name())
+		if _, d, err := ReadLocalManifest(context.Background(), tagDir); tag.IsDir() && err == nil && d.String() == repo.Reference.Reference {
+			return tagDir, nil
+		}
 	}
 	return dir, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,4 +72,34 @@ func TestLocalCacheRefusesReplacementAndCancellation(t *testing.T) {
 	dir, err := oci.ImageDir(cache, "127.0.0.1:1/test:cancelled")
 	require.NoError(t, err)
 	require.NoDirExists(t, dir)
+}
+
+// A Pod pins a node-built image by digest: repo@<local manifest digest> resolves to the local tag
+// holding that manifest, and the same digest cannot be installed a second time. An unknown digest
+// keeps its own path, where an ordinary pull would put it.
+func TestLocalCacheResolvesDigestReference(t *testing.T) {
+	cache := t.TempDir()
+	path := filepath.Join(t.TempDir(), "data.img")
+	require.NoError(t, os.WriteFile(path, []byte("disk contents"), 0o600))
+	res, err := CacheLocal(context.Background(), PushOptions{Ref: "127.0.0.1:1/test:local", Disk: path}, cache)
+	require.NoError(t, err)
+	tagDir, err := oci.ImageDir(cache, "127.0.0.1:1/test:local")
+	require.NoError(t, err)
+
+	dir, err := oci.ImageDir(cache, "127.0.0.1:1/test@"+res.ManifestDigest.String())
+	require.NoError(t, err)
+	require.Equal(t, tagDir, dir)
+	m, d, err := oci.ReadLocalManifest(context.Background(), dir)
+	require.NoError(t, err)
+	require.Equal(t, res.ManifestDigest, d)
+	require.True(t, oci.IsCached(m.Layers[0], dir))
+
+	other := "sha256:" + strings.Repeat("0", 64)
+	dir, err = oci.ImageDir(cache, "127.0.0.1:1/test@"+other)
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(cache, "blobs/127.0.0.1/1/test@sha256", strings.Repeat("0", 64)), dir)
+
+	require.NoError(t, os.WriteFile(path, []byte("disk contents"), 0o600))
+	_, err = CacheLocal(context.Background(), PushOptions{Ref: "127.0.0.1:1/test@" + res.ManifestDigest.String(), Disk: path}, cache)
+	require.ErrorContains(t, err, "already exists")
 }
