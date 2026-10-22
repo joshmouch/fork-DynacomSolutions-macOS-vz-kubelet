@@ -490,6 +490,10 @@ func runRemote(ctx context.Context, client *ssh.Client, cmd string, stdin io.Rea
 	if errors.As(err, &exit) {
 		return fmt.Errorf("exit status %d", exit.ExitStatus())
 	}
+	var missing *ssh.ExitMissingError
+	if errors.As(err, &missing) {
+		return fmt.Errorf("the guest closed the SSH session before the command exited (its sshd-session was torn down: early boot, an sshd restart or a guest reboot), not a script failure: %w", err)
+	}
 	return err
 }
 
