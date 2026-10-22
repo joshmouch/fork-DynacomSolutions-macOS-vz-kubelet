@@ -53,6 +53,10 @@ type Options struct {
 	ScriptPath string // absolute path of the provisioning script
 	CredsPath  string // absolute path of the root-only registry credentials JSON
 	CacheDir   string // provider cache root (holds blobs/ and build/)
+	// Local installs the result in CacheDir under To, as import-tart --local does, instead of pushing
+	// it: the node that runs the image also builds it, so a tens-of-GB disk layer never makes a
+	// registry round trip. Pods use it with imagePullPolicy IfNotPresent. CredsPath may then be empty.
+	Local bool
 
 	Prefixes       []string // VZ_ALLOWED_IMAGE_PREFIXES
 	MinFreeBytes   uint64   // VZ_MIN_FREE_BYTES floor, 0 disables
@@ -118,13 +122,15 @@ func Run(ctx context.Context, o Options) (err error) {
 	if err != nil {
 		return fmt.Errorf("script: %w", err)
 	}
-	credsRaw, err := buildutil.ReadFile(o.CredsPath, buildutil.FilePolicy{MaxSize: maxCredsSize, OwnerUID: o.OwnerUID, ForbidBit: 0o077})
-	if err != nil {
-		return fmt.Errorf("credentials file: %w", err)
-	}
-	creds, err := buildutil.ParseCredentials(credsRaw)
-	if err != nil {
-		return err
+	var creds buildutil.Credentials
+	if !o.Local || o.CredsPath != "" {
+		credsRaw, err := buildutil.ReadFile(o.CredsPath, buildutil.FilePolicy{MaxSize: maxCredsSize, OwnerUID: o.OwnerUID, ForbidBit: 0o077})
+		if err != nil {
+			return fmt.Errorf("credentials file: %w", err)
+		}
+		if creds, err = buildutil.ParseCredentials(credsRaw); err != nil {
+			return err
+		}
 	}
 	sum := sha256.Sum256(script)
 	scriptSHA := hex.EncodeToString(sum[:])
@@ -265,6 +271,14 @@ func Run(ctx context.Context, o Options) (err error) {
 	if dataPath != "" {
 		// A data disk is the blank disk the script filled; the boot clone is discarded.
 		push.Disk, push.Aux, push.Config = dataPath, "", ""
+	}
+	if o.Local {
+		res, err := buildutil.CacheLocal(ctx, push, o.CacheDir)
+		if err != nil {
+			return err
+		}
+		logger.Infof("Cached %s locally (manifest %s)", o.To, res.ManifestDigest)
+		return nil
 	}
 	res, err := buildutil.Push(ctx, push)
 	if err != nil {

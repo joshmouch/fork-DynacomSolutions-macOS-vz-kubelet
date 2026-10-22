@@ -19,7 +19,7 @@ import (
 	logruslogger "github.com/virtual-kubelet/virtual-kubelet/log/logrus"
 )
 
-const buildImageUsage = `usage: MacOSVK build-image --from <ref> --to <ref> --script <file> --registry-creds-file <file> [flags]
+const buildImageUsage = `usage: MacOSVK build-image --from <ref> --to <ref> --script <file> (--registry-creds-file <file> | --local) [flags]
 
 Builds a new macOS image from one already in the provider cache: boots an APFS clone of it,
 runs the script in the guest as the VZ_SSH_USER user, stops the VM from the host and streams
@@ -42,6 +42,7 @@ func buildImageMain(args []string) int {
 		to        = fs.String("to", "", "image reference to push (name:tag)")
 		script    = fs.String("script", "", "absolute path of the provisioning script (owned by the invoking user, not group/other writable)")
 		creds     = fs.String("registry-creds-file", "", "absolute path of a 0600 JSON file owned by the invoking user, with username and password, or identityToken")
+		local     = fs.Bool("local", false, "install the result in the cache under --to (as import-tart --local) instead of pushing it; --registry-creds-file is then optional")
 		cacheDir  = fs.String("cache-dir", "", "provider cache directory (default: the provider's)")
 		cpu       = fs.Uint("cpu", 4, "virtual CPUs of the build VM")
 		memoryGiB = fs.Uint64("memory-gib", 8, "memory of the build VM in GiB")
@@ -59,7 +60,7 @@ func buildImageMain(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *from == "" || *to == "" || *script == "" || *creds == "" {
+	if *from == "" || *to == "" || *script == "" || (*creds == "" && !*local) {
 		fs.Usage()
 		return 2
 	}
@@ -95,7 +96,7 @@ func buildImageMain(args []string) int {
 	}
 
 	err = imagebuild.Run(ctx, imagebuild.Options{
-		From: *from, To: *to, ScriptPath: *script, CredsPath: *creds, CacheDir: filepath.Clean(dir),
+		From: *from, To: *to, ScriptPath: *script, CredsPath: *creds, CacheDir: filepath.Clean(dir), Local: *local,
 		Prefixes:         prefixes,
 		MinFreeBytes:     envcfg.MinFreeBytes(),
 		ExpectedGrowth:   *growthGiB << 30,
