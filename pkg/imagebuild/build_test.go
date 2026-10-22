@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/agoda-com/macOS-vz-kubelet/internal/buildutil"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/downloader"
@@ -182,4 +183,16 @@ func TestCreateSparseDisk(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(2<<30), fi.Size())
 	assert.Error(t, createSparseDisk(p, 2), "an existing file is not reused")
+}
+
+// parseUptime reads the guest's whole seconds since boot and refuses anything else, so a
+// garbled probe fails the build instead of being read as a settled guest.
+func TestParseUptime(t *testing.T) {
+	up, err := parseUptime("18\n")
+	require.NoError(t, err)
+	assert.Equal(t, 18*time.Second, up)
+	for _, bad := range []string{"", "abc", "-3", "{ sec = 1 }"} {
+		_, err := parseUptime(bad)
+		assert.Error(t, err, bad)
+	}
 }

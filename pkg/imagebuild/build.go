@@ -348,7 +348,7 @@ func provision(ctx context.Context, ip string, script []byte, timeout time.Durat
 	if err != nil {
 		return err
 	}
-	client, err := waitForSSH(ctx, ip, sshCfg, envcfg.SSHReadinessTimeout())
+	client, err := waitForSettledSSH(ctx, ip, sshCfg, envcfg.GuestSettle())
 	if err != nil {
 		return err
 	}
@@ -396,6 +396,54 @@ sudo -n diskutil unmountDisk force "/dev/$1"
 
 // unmountCommand runs unmountDataDiskScript (on stdin) for a data disk of size bytes.
 func unmountCommand(size uint64) string { return fmt.Sprintf("/bin/bash -s -- %d", size) }
+
+// guestUptimeCommand prints the guest's whole seconds since boot.
+const guestUptimeCommand = `echo $(( $(date +%s) - $(sysctl -n kern.boottime | sed -E 's/.*sec = ([0-9]+).*/\1/') ))`
+
+// waitForSettledSSH returns a client dialled once the guest has been up for settle. sshd answers
+// before a macOS guest's boot settles, and early boot tears down every live session
+// (envcfg.GuestSettle), so a young guest's connection is closed and re-dialled after the wait.
+func waitForSettledSSH(ctx context.Context, ip string, cfg *ssh.ClientConfig, settle time.Duration) (*ssh.Client, error) {
+	deadline := time.Now().Add(settle + envcfg.SSHReadinessTimeout())
+	for {
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("guest boot did not settle: no session survived within %s", settle+envcfg.SSHReadinessTimeout())
+		}
+		client, err := waitForSSH(ctx, ip, cfg, envcfg.SSHReadinessTimeout())
+		if err != nil {
+			return nil, err
+		}
+		var out bytes.Buffer
+		wait := 2 * time.Second // the probe's session was torn down: early boot, retry shortly
+		if err := runRemote(ctx, client, guestUptimeCommand, nil, &out, time.Minute); err == nil {
+			up, perr := parseUptime(out.String())
+			if perr != nil {
+				_ = client.Close()
+				return nil, perr
+			}
+			if up >= settle {
+				return client, nil
+			}
+			wait = settle - up
+		}
+		_ = client.Close()
+		log.G(ctx).Infof("Waiting %s for the guest's boot to settle before provisioning", wait.Round(time.Second))
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
+// parseUptime reads guestUptimeCommand's output.
+func parseUptime(s string) (time.Duration, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("guest uptime: unexpected output %q", strings.TrimSpace(s))
+	}
+	return time.Duration(n) * time.Second, nil
+}
 
 func waitForSSH(ctx context.Context, ip string, cfg *ssh.ClientConfig, budget time.Duration) (*ssh.Client, error) {
 	deadline := time.Now().Add(budget)
