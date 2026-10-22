@@ -59,6 +59,40 @@ func CacheLocal(ctx context.Context, o PushOptions, cacheDir string) (PushResult
 	return publish(ctx, o, cacheDir)
 }
 
+// CacheNativeLocal publishes stopped-VM files through the node-local immutable
+// descriptor contract, avoiding full disk compression and byte verification.
+// Push and CacheLocal retain the portable byte-digest contract for imports.
+func CacheNativeLocal(ctx context.Context, o PushOptions, cacheDir string) (PushResult, error) {
+	if cacheDir == "" || (o.Aux == "") != (o.Config == "") {
+		return PushResult{}, errors.New("native cache requires a cache root and paired aux/config")
+	}
+	paths := map[string]string{oci.MediaTypeDiskImage.Title(): o.Disk}
+	types := []oci.MediaType{oci.MediaTypeDiskImage}
+	if o.Aux != "" {
+		paths[oci.MediaTypeAuxImage.Title()], paths[oci.MediaTypeConfigV1.Title()] = o.Aux, o.Config
+		types = append(types, oci.MediaTypeAuxImage, oci.MediaTypeConfigV1)
+		b, err := os.ReadFile(o.Config)
+		if err != nil {
+			return PushResult{}, err
+		}
+		var cfg oci.Config
+		if json.Unmarshal(b, &cfg) != nil || cfg.HardwareModelData == "" || cfg.MachineIdData == "" {
+			return PushResult{}, errors.New("invalid native platform config")
+		}
+	}
+	m := ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest,
+		ArtifactType: ArtifactType, Config: ocispec.DescriptorEmptyJSON, Annotations: o.Annotations}
+	for _, mt := range types {
+		m.Layers = append(m.Layers, ocispec.Descriptor{MediaType: string(mt), Annotations: map[string]string{ocispec.AnnotationTitle: mt.Title()}})
+	}
+	m, err := oci.InstallNativeLocal(ctx, cacheDir, o.Ref, m, paths)
+	if err != nil {
+		return PushResult{}, err
+	}
+	b, err := json.Marshal(m)
+	return PushResult{Manifest: m, ManifestDigest: digest.FromBytes(b)}, err
+}
+
 func publish(ctx context.Context, o PushOptions, cacheDir string) (PushResult, error) {
 	if (o.Aux == "") != (o.Config == "") {
 		return PushResult{}, errors.New("aux and config must be set together: both for a bootable image, neither for a data disk")
