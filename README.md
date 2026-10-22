@@ -175,7 +175,7 @@ Local image files carry a recorded digest to guarantee integrity:
 
 ## Building an image from a cached one
 
-`MacOSVK build-image` (root only, never a Pod feature) derives a new image from one the provider has already cached, without downloading it again:
+`MacOSVK build-image` (run as the provider's user, never a Pod feature) derives a new image from one the provider has already cached, without downloading it again:
 
 ```
 MacOSVK build-image --from <registry/ns/name:tag> --to <registry/ns/name:tag> \
@@ -184,9 +184,9 @@ MacOSVK build-image --from <registry/ns/name:tag> --to <registry/ns/name:tag> \
 
 - `--from` and `--to` must both start with an entry of `VZ_ALLOWED_IMAGE_PREFIXES` (required for this command), and `--from` must be fully cached and digest-verified.
 - The disk and aux images are APFS-cloned into `<cache>/build/` (same volume), booted headless, the script runs in the guest as `VZ_SSH_USER` over the existing key, then the VM is stopped from the host (a guest shutdown leaks a VM slot on macOS 26.5).
-- The result is streamed to the registry as gzip layers with no temp file: each layer is read twice (digest first, then upload). `creds.json` is `{"username":"..","password":".."}` or `{"identityToken":".."}`, owned by root, mode 0600. The script must be root-owned and not group/other writable.
+- The result is streamed to the registry as gzip layers with no temp file: each layer is read twice (digest first, then upload). `creds.json` is `{"username":"..","password":".."}` or `{"identityToken":".."}`, owned by the user running the build, mode 0600. The script must be owned by that user and not group/other writable.
 - `--data-disk-gib N` builds a data disk instead: a blank sparse raw disk of N GiB (at most 256) is attached to the build VM as a second writable device, the script finds it and formats it (for example `diskutil eraseDisk APFS Xcode GPT diskN`), and only that disk is pushed as a one-layer image. The recipe must leave the data disk unmountable cleanly (no open files, no process using it): before the host stop the build unmounts it over SSH (`sudo -n diskutil unmountDisk force`, on the one physical disk of exactly N GiB) and fails if that does not work. The boot clone is discarded. Size N tightly: the disk is filled, so the free-space check requires `--expected-growth-gib` plus N GiB, and the disk guard reserves the full N GiB on every node that pulls the image. Pods attach the result with the `dynacom.dev/data-disks` annotation (see Storage).
-- It refuses to run while a macOS virtual machine owned by root (the provider's) is running, or one owned by a user named with `--count-vm-user` (repeatable); Linux VMs such as Colima's are not counted, and a failure to enumerate refuses the run. It honours `VZ_MIN_FREE_BYTES` throughout, and always deletes the clone. Peak extra disk is the blocks the script changes (`--expected-growth-gib`, default 10).
+- It refuses to run while a macOS virtual machine owned by root or by the user running the build (the provider's) is running, or one owned by a user named with `--count-vm-user` (repeatable); Linux VMs such as Colima's are not counted, and a failure to enumerate refuses the run. It honours `VZ_MIN_FREE_BYTES` throughout, and always deletes the clone. Peak extra disk is the blocks the script changes (`--expected-growth-gib`, default 10).
 
 ## Importing a Tart image
 
@@ -202,10 +202,10 @@ MacOSVK import-tart --local \
   --cache-dir /abs/path/provider-cache
 ```
 
-Run the import as the **same user as the provider** (root for `build-image`) and
+Run the import as the **same user as the provider** (root, or the user the provider runs as) and
 use the same `--cache-dir` for the import and build. The default is that user's
 OS cache directory plus the provider's app identifier. A different user's cache
-will not be found, and `build-image` requires root-owned cached inputs.
+will not be found, and `build-image` requires cached inputs owned by the user running it.
 
 The source is anonymous by default; `--src-creds` authenticates a private source.
 Omitting `--local` retains registry publishing and requires a later pull before
@@ -269,7 +269,7 @@ recipe's result before running the build against a full registry.
 
 ## Creating a base image from an IPSW
 
-`MacOSVK create-base` (root only, never a Pod feature) installs macOS from an Apple IPSW and pushes the result as a base image, with no other tooling:
+`MacOSVK create-base` (run as the provider's user, never a Pod feature) installs macOS from an Apple IPSW and pushes the result as a base image, with no other tooling:
 
 ```
 MacOSVK create-base --ipsw-url https://... --ipsw-sha256 <hex> \
@@ -279,8 +279,8 @@ MacOSVK create-base --ipsw-url https://... --ipsw-sha256 <hex> \
 
 - `--to` must be under `registry.s.dynacom.dev/macos-vz/`. The IPSW is downloaded over HTTPS into `<cache>/create-base/`, its SHA-256 is verified (a mismatch fails and deletes the download) and a verified cached copy is reused.
 - macOS is installed with `VZMacOSInstaller` using the restore image's most featureful supported configuration. Setup Assistant is skipped by seeding the guest's data volume from the host (user `admin`, `.AppleSetupDone`, sshd on, `authorized_keys` for the `VZ_SSH_PRIVATE_KEY_*` key; `VZ_SSH_USER` must be `admin`). The same seed adds `admin` to the admin group and writes the passwordless sudoers.d entry and a key-only sshd drop-in, so the password never crosses SSH. On first boot (IP lookup budget 10 minutes) these are only verified, and FileVault is checked to be off. Then the script runs, the VM is stopped from the host and the image is pushed.
-- `creds.json` is `{"username":"..","password":"..","guest_password":".."}` (`identityToken` may replace username and password), root-owned, mode 0600. The guest password is never printed.
-- It refuses to run while a macOS virtual machine owned by root (or a `--count-vm-user` user) is running.
+- `creds.json` is `{"username":"..","password":"..","guest_password":".."}` (`identityToken` may replace username and password), owned by the user running it, mode 0600. The guest password is never printed.
+- It refuses to run while a macOS virtual machine owned by root, by the user running it, or by a `--count-vm-user` user, is running.
 - `--then-script <file>` (optional): after `--script` the host stops the VM, boots it again and runs a second script (same file rules). For recipes that change the boot volume and need a reboot to finish.
 - `--pre-recovery-script <file>` (needs `--recovery-sip-off`): before Recovery the seeded guest boots normally, is verified, runs the script as `admin` (bash, the guest password is the first line of its stdin and is never put on argv or logged) and is stopped. Use it for what Recovery needs first, such as a SecureToken for `admin` so `csrutil` has an authorized user.
 - `--post-script-recovery-script <file>` (needs `--then-script`): after the first script the host stops the VM, starts it in macOS Recovery a second time and plays this script (same format and screenshots as `--recovery-script`), then boots it for the second script. For work only Recovery can do once the first script has blessed a new root snapshot, such as deleting the old one.

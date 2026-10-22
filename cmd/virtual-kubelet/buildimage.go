@@ -23,10 +23,10 @@ const buildImageUsage = `usage: MacOSVK build-image --from <ref> --to <ref> --sc
 
 Builds a new macOS image from one already in the provider cache: boots an APFS clone of it,
 runs the script in the guest as the VZ_SSH_USER user, stops the VM from the host and streams
-the result to the registry. Must run as root. Needs VZ_ALLOWED_IMAGE_PREFIXES, VZ_SSH_USER and
+the result to the registry. Runs as the provider's user (root, or the user the provider runs as). Needs VZ_ALLOWED_IMAGE_PREFIXES, VZ_SSH_USER and
 VZ_SSH_PASSWORD or VZ_SSH_PRIVATE_KEY_PATH (or _BASE64); honours VZ_MIN_FREE_BYTES and VZ_BRIDGE_INTERFACE.
 Local imports are verified from their saved manifest without contacting the base registry.
-Refuses to run while a macOS virtual machine owned by root (the provider's) or by a --count-vm-user
+Refuses to run while a macOS virtual machine owned by root or the invoking user (the provider's) or by a --count-vm-user
 user is running; Linux VMs such as Colima's do not count against Apple's 2-VM cap.
 With --data-disk-gib N the result is a data disk, not a bootable image: the script finds the blank
 extra disk and formats it (diskutil eraseDisk), and only that disk is pushed.
@@ -40,8 +40,8 @@ func buildImageMain(args []string) int {
 	var (
 		from      = fs.String("from", "", "cached base image reference (name:tag)")
 		to        = fs.String("to", "", "image reference to push (name:tag)")
-		script    = fs.String("script", "", "absolute path of the provisioning script (root-owned, not group/other writable)")
-		creds     = fs.String("registry-creds-file", "", "absolute path of a root-only (0600) JSON file with username and password, or identityToken")
+		script    = fs.String("script", "", "absolute path of the provisioning script (owned by the invoking user, not group/other writable)")
+		creds     = fs.String("registry-creds-file", "", "absolute path of a 0600 JSON file owned by the invoking user, with username and password, or identityToken")
 		cacheDir  = fs.String("cache-dir", "", "provider cache directory (default: the provider's)")
 		cpu       = fs.Uint("cpu", 4, "virtual CPUs of the build VM")
 		memoryGiB = fs.Uint64("memory-gib", 8, "memory of the build VM in GiB")
@@ -63,11 +63,6 @@ func buildImageMain(args []string) int {
 		fs.Usage()
 		return 2
 	}
-	if os.Geteuid() != 0 {
-		fmt.Fprintln(os.Stderr, "build-image must run as root")
-		return 1
-	}
-
 	lvl, err := logrus.ParseLevel(*logLevel)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -104,7 +99,7 @@ func buildImageMain(args []string) int {
 		Prefixes:         prefixes,
 		MinFreeBytes:     envcfg.MinFreeBytes(),
 		ExpectedGrowth:   *growthGiB << 30,
-		OwnerUID:         0,
+		OwnerUID:         uint32(os.Geteuid()),
 		CPU:              *cpu,
 		MemoryBytes:      *memoryGiB << 30,
 		NetworkInterface: os.Getenv("VZ_BRIDGE_INTERFACE"),

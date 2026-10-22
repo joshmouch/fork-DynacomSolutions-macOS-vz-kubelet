@@ -517,7 +517,7 @@ const vmProcessMarker = "com.apple.Virtualization.VirtualMachine"
 // countVirtualizationProcesses lists processes with ps and counts the macOS guests among them.
 // Any failure to enumerate is an error, so the caller fails closed.
 func countVirtualizationProcesses(extraUsers []string) (int, error) {
-	uids := map[int]bool{0: true}
+	uids := map[int]bool{0: true, os.Geteuid(): true}
 	for _, name := range extraUsers {
 		u, err := user.Lookup(name)
 		if err != nil {
@@ -538,7 +538,8 @@ func countVirtualizationProcesses(extraUsers []string) (int, error) {
 
 // countMacOSGuests counts Virtualization VM processes in ps output ("pid uid command" lines)
 // owned by one of uids. Apple's 2-VM cap applies to macOS guests only, and a process does not
-// say what it runs, so ownership is the signal: the provider runs as root and starts every
+// say what it runs, so ownership is the signal: the provider runs as root or as one user (macOS 26 guests cannot
+// boot from a root process on some hosts: "Failed to get current host key") and starts every
 // macOS VM of this node, while Colima's Linux VM belongs to its own user and is not counted.
 // A VM process whose line cannot be parsed is counted (fail closed).
 func countMacOSGuests(ps string, uids map[int]bool) int {
