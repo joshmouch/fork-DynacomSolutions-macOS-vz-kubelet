@@ -85,8 +85,7 @@ var (
 	listenPort                   = 10250
 )
 
-// command is the program; main (main_darwin.go, main_other.go) decides which thread it runs on.
-func command() {
+func main() {
 	if len(os.Args) > 1 && os.Args[1] == "import-tart" {
 		os.Exit(importTartMain(os.Args[2:]))
 	}
