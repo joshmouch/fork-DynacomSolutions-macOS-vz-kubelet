@@ -3,12 +3,16 @@ package ssh
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"time"
 
 	"github.com/virtual-kubelet/virtual-kubelet/log"
 	"github.com/virtual-kubelet/virtual-kubelet/trace"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/agoda-com/macOS-vz-kubelet/internal/envcfg"
 )
 
 // DialContext starts a client connection to the given SSH server. It is a
@@ -40,16 +44,24 @@ func DialContext(ctx context.Context, network, addr string, config *ssh.ClientCo
 		defer cancel()
 	}
 
-	d := net.Dialer{
-		Timeout: config.Timeout,
-	}
 	tcpCtx, tcpSpan := trace.StartSpan(ctx, "VZSSH.DialTCP")
-	conn, err := d.DialContext(tcpCtx, network, addr)
+	conn, closeJump, err := dialTransport(tcpCtx, network, addr, config)
 	tcpSpan.SetStatus(err)
 	tcpSpan.End()
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if closeJump == nil {
+			return
+		}
+		if err != nil || client == nil {
+			closeJump()
+			return
+		}
+		// The jump connection carries this client: close it when the client ends.
+		go func() { _ = client.Wait(); closeJump() }()
+	}()
 	type result struct {
 		client *ssh.Client
 		err    error
@@ -86,4 +98,43 @@ func DialContext(ctx context.Context, network, addr string, config *ssh.ClientCo
 		hsSpan.End()
 		return nil, err
 	}
+}
+
+// dialTransport opens the byte stream to addr: directly, or, with VZ_SSH_JUMP set, as a
+// direct-tcpip channel of an SSH connection to the jump host, so the jump host's sshd opens
+// the guest connection and this process only connects to the jump host (envcfg.SSHJump says
+// why). The jump login reuses config's authentication under the jump user. closeJump, when
+// non-nil, closes the jump connection.
+func dialTransport(ctx context.Context, network, addr string, config *ssh.ClientConfig) (conn net.Conn, closeJump func(), err error) {
+	d := net.Dialer{Timeout: config.Timeout}
+	user, jumpAddr, ok, err := envcfg.SSHJump()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !ok {
+		conn, err = d.DialContext(ctx, network, addr)
+		return conn, nil, err
+	}
+	raw, err := d.DialContext(ctx, "tcp", jumpAddr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("jump host %s: %w", jumpAddr, err)
+	}
+	if deadline, has := ctx.Deadline(); has {
+		_ = raw.SetDeadline(deadline) // bounds the jump handshake; cleared once it is up
+	}
+	jumpConfig := *config
+	jumpConfig.User = user
+	c, chans, reqs, err := ssh.NewClientConn(raw, jumpAddr, &jumpConfig)
+	if err != nil {
+		_ = raw.Close()
+		return nil, nil, fmt.Errorf("jump host %s: %w", jumpAddr, err)
+	}
+	_ = raw.SetDeadline(time.Time{})
+	jump := ssh.NewClient(c, chans, reqs)
+	conn, err = jump.DialContext(ctx, network, addr)
+	if err != nil {
+		_ = jump.Close()
+		return nil, nil, fmt.Errorf("via jump host %s: %w", jumpAddr, err)
+	}
+	return conn, func() { _ = jump.Close() }, nil
 }

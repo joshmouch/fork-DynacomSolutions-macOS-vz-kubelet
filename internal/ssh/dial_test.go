@@ -39,10 +39,24 @@ func TestDialContext(t *testing.T) {
 	})
 
 	t.Run("context timeout", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+		// A server that accepts but never sends its SSH banner, so the deadline always expires in
+		// the handshake. (A 1 ms deadline against the live mock server raced a fast handshake.)
+		silent, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		defer silent.Close()
+		go func() {
+			for {
+				c, err := silent.Accept()
+				if err != nil {
+					return
+				}
+				defer c.Close()
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 
-		client, err := vzssh.DialContext(ctx, "tcp", addr, config)
+		client, err := vzssh.DialContext(ctx, "tcp", silent.Addr().String(), config)
 		assert.Errorf(t, err, "Expected error due to context timeout, got nil")
 		assert.Nilf(t, client, "Expected nil client, got %v", client)
 		assert.EqualErrorf(t, err, context.DeadlineExceeded.Error(), "Expected context.DeadlineExceeded, got %v", err)
