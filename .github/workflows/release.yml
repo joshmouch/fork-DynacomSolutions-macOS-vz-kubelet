@@ -3,12 +3,18 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing immutable source tag to build with the current release workflow
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -17,10 +23,13 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 15
     env:
-      VERSION: ${{ github.ref_name }}
+      VERSION: ${{ inputs.release_tag || github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          fetch-depth: 0
       # Bootstrap belongs to the public package-install Action. Its Actions
       # deadline is separate from the subsequent supervised shell stages.
       - name: Install public bounded-process package
@@ -33,11 +42,39 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Verify immutable release source
+        run: |
+          with-limits -t 118s -- bash -euo pipefail -c '
+            case "$VERSION" in v*) ;; *) echo "release source must be an existing v tag" >&2; exit 2;; esac
+            test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/${VERSION}^{commit}")"
+            git rev-parse HEAD
+          '
+      # Go owns dependency closure and incremental compiled objects. Separate
+      # native package roots avoid spending the final link phase on a cold SDK,
+      # Kubernetes API and client compiler cache in one admitted command.
+      - name: Download Go modules
+        run: |
+          with-limits -t 118s -- go mod download
+      - name: Compile standard runtime
+        run: |
+          with-limits -t 118s -- go build -v -trimpath net/http encoding/json crypto/tls runtime/cgo
+      - name: Compile Kubernetes API
+        run: |
+          with-limits -t 118s -- go build -v -trimpath k8s.io/api/...
+      - name: Compile Kubernetes clients
+        run: |
+          with-limits -t 118s -- go build -v -trimpath k8s.io/client-go/...
+      - name: Compile API server
+        run: |
+          with-limits -t 118s -- go build -v -trimpath k8s.io/apiserver/pkg/server/options
+      - name: Compile native virtualization and Docker clients
+        run: |
+          with-limits -t 118s -- go build -v -trimpath github.com/Code-Hex/vz/v3 github.com/moby/moby/client
       - name: Build
         run: |
           with-limits -t 118s -- bash -euo pipefail -c '
             mkdir -p dist
-            go build -trimpath -ldflags "-X main.buildVersion=${VERSION}" -o dist/MacOSVK ./cmd/virtual-kubelet
+            go build -v -trimpath -ldflags "-X main.buildVersion=${VERSION}" -o dist/MacOSVK ./cmd/virtual-kubelet
           '
       - name: Sign and package
         run: |

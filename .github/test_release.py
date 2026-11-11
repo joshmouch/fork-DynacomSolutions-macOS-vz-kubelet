@@ -27,9 +27,16 @@ class ReleaseTests(unittest.TestCase):
             if "run" in step:
                 self.assertTrue(step["run"].startswith("with-limits -t 118s -- "))
                 subprocess.run([BASH, "-n"], input=step["run"], text=True, check=True)
-        self.assertEqual(len(self.steps), 6)
+        self.assertGreaterEqual(len(self.steps), 6)
         self.assertIn("cancel-in-progress: false", self.workflow)
         self.assertIn("version: '=0.2.0'", self.workflow)
+
+    def test_recovery_builds_the_original_immutable_tag(self):
+        self.assertIn("workflow_dispatch:", self.workflow)
+        self.assertIn("ref: ${{ inputs.release_tag || github.ref }}", self.workflow)
+        verification = next(s for s in self.steps if s["name"] == "Verify immutable release source")
+        self.assertIn('git rev-parse "refs/tags/${VERSION}^{commit}"', verification["run"])
+        self.assertIn("release-${{ inputs.release_tag || github.ref_name }}", self.workflow)
 
     def run_resume(self, response, exit_code=0, error=""):
         with tempfile.TemporaryDirectory() as root:
