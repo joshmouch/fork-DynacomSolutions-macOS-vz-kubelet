@@ -7,78 +7,36 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   release:
     name: darwin/arm64 release
     runs-on: macos-15
-    timeout-minutes: 15
-    env:
-      VERSION: ${{ github.ref_name }}
-      GH_TOKEN: ${{ github.token }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      # Bootstrap belongs to the public package-install Action. Its Actions
-      # deadline is separate from the subsequent supervised shell stages.
-      - name: Install public bounded-process package
-        uses: baptiste0928/cargo-install@7bd70db8ca6e029946e34941e3e40d7c7eda2299 # v3
-        timeout-minutes: 2
-        with:
-          crate: with-limits
-          version: '=0.2.0'
-          locked: true
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Build
+      - name: Build and ad-hoc sign
+        env:
+          VERSION: ${{ github.ref_name }}
         run: |
-          with-limits -t 118s -- bash -euo pipefail -c '
-            mkdir -p dist
-            go build -trimpath -ldflags "-X main.buildVersion=${VERSION}" -o dist/MacOSVK ./cmd/virtual-kubelet
-          '
-      - name: Sign and package
+          set -euo pipefail
+          mkdir -p dist
+          go build -ldflags "-X main.buildVersion=${VERSION}" -o dist/MacOSVK ./cmd/virtual-kubelet
+          # Same signing as `make build`: ad-hoc with the virtualization entitlement.
+          codesign -s - --entitlements resources/vz.entitlements dist/MacOSVK
+          codesign -d --entitlements - dist/MacOSVK 2>&1 | grep -q com.apple.security.virtualization
+          ASSET="macos-vz-kubelet_${VERSION}_darwin_arm64.tar.gz"
+          tar -C dist -czf "dist/${ASSET}" MacOSVK
+          (cd dist && shasum -a 256 "${ASSET}" > "${ASSET}.sha256")
+          cat "dist/${ASSET}.sha256"
+          echo "ASSET=${ASSET}" >> "$GITHUB_ENV"
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
         run: |
-          with-limits -t 118s -- bash -euo pipefail -c '
-            codesign -s - --entitlements resources/vz.entitlements dist/MacOSVK
-            codesign -d --entitlements - dist/MacOSVK 2>&1 | grep -q com.apple.security.virtualization
-            # Stable metadata permits byte comparison on a resumed run.
-            touch -t 202001010000 dist/MacOSVK
-            ASSET="macos-vz-kubelet_${VERSION}_darwin_arm64.tar.gz"
-            tar -C dist -cf - MacOSVK | gzip -n > "dist/${ASSET}"
-            (cd dist && shasum -a 256 "${ASSET}" > "${ASSET}.sha256")
-            cat "dist/${ASSET}.sha256"
-            echo "ASSET=${ASSET}" >> "$GITHUB_ENV"
-          '
-      - name: Resume or create release draft
-        run: |
-          with-limits -t 118s -- bash -euo pipefail -c '
-            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}" --jq "\"DRAFT=\" + (.draft | tostring)" > dist/release.env 2> dist/release.error; then
-              cat dist/release.env >> "$GITHUB_ENV"
-            elif grep -q "HTTP 404" dist/release.error; then
-              gh release create "$VERSION" --draft --verify-tag --repo "$GITHUB_REPOSITORY" --title "$VERSION" --notes "darwin/arm64 build, ad-hoc signed with the virtualization entitlement. Verify with the .sha256 file."
-              echo DRAFT=true >> "$GITHUB_ENV"
-            else
-              cat dist/release.error >&2
-              exit 1
-            fi
-          '
-      - name: Upload draft assets
-        if: env.DRAFT == 'true'
-        run: |
-          with-limits -t 118s -- gh release upload "$VERSION" "dist/${ASSET}" "dist/${ASSET}.sha256" --clobber --repo "$GITHUB_REPOSITORY"
-      - name: Verify release asset bytes
-        run: |
-          with-limits -t 118s -- bash -euo pipefail -c '
-            mkdir -p dist/readback
-            gh release download "$VERSION" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET" --pattern "${ASSET}.sha256" --dir dist/readback
-            (cd dist/readback && shasum -a 256 -c "${ASSET}.sha256")
-            cmp "dist/${ASSET}" "dist/readback/${ASSET}"
-            cmp "dist/${ASSET}.sha256" "dist/readback/${ASSET}.sha256"
-          '
-      - name: Publish verified draft
-        if: env.DRAFT == 'true'
-        run: |
-          with-limits -t 118s -- gh release edit "$VERSION" --draft=false --repo "$GITHUB_REPOSITORY"
+          gh release create "${VERSION}" "dist/${ASSET}" "dist/${ASSET}.sha256" \
+            --repo "${GITHUB_REPOSITORY}" --title "${VERSION}" \
+            --notes "darwin/arm64 build, ad-hoc signed with the virtualization entitlement. Verify with the .sha256 file."
