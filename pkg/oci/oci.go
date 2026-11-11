@@ -232,6 +232,13 @@ func (s *Store) Exists(ctx context.Context, target ocispec.Descriptor) (ok bool,
 	}
 	name := target.Annotations[ocispec.AnnotationTitle]
 	filePath := filepath.Join(s.workingDir, name)
+	if _, native := target.Annotations[AnnotationNativeSeal]; native {
+		if s.ignoreExisting || !HasLocalManifest(s.workingDir) || !IsCached(target, s.workingDir) {
+			return false, errors.New("native local image seal is unavailable or invalid")
+		}
+		s.mediaTypeToPath.Store(target.MediaType, filePath)
+		return true, nil
+	}
 
 	// if the content exists on the disk and is not ignored, validate it
 	if _, err := os.Stat(filePath); err == nil && !s.ignoreExisting && name != "" {

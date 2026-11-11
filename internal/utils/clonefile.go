@@ -33,6 +33,9 @@ func (fc *FileCloner) Clonefile(path, pattern string) (string, error) {
 	if err := fc.SysClonefileFunc(path, clonedPath, 0); err != nil {
 		return "", fmt.Errorf("failed to clone storage file: %w", err)
 	}
+	if err := unix.Chflags(clonedPath, 0); err != nil {
+		return "", fmt.Errorf("failed to make storage clone writable: %w", err)
+	}
 
 	return clonedPath, nil
 }

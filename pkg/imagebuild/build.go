@@ -57,6 +57,9 @@ type Options struct {
 	// it: the node that runs the image also builds it, so a tens-of-GB disk layer never makes a
 	// registry round trip. Pods use it with imagePullPolicy IfNotPresent. CredsPath may then be empty.
 	Local bool
+	// InputIdentity is the graph-derived immutable ordered-prefix identity.
+	InputIdentity        string
+	ExpectedScriptDigest string
 
 	Prefixes       []string // VZ_ALLOWED_IMAGE_PREFIXES
 	MinFreeBytes   uint64   // VZ_MIN_FREE_BYTES floor, 0 disables
@@ -134,6 +137,39 @@ func Run(ctx context.Context, o Options) (err error) {
 	}
 	sum := sha256.Sum256(script)
 	scriptSHA := hex.EncodeToString(sum[:])
+	if o.ExpectedScriptDigest != "" && o.ExpectedScriptDigest != scriptSHA {
+		return errors.New("recipe changed after stack identity capture")
+	}
+	var bd *buildutil.BuildDir
+	if o.Local {
+		bd, err = buildutil.AwaitBuildDir(ctx, filepath.Join(o.CacheDir, "build"))
+		if err != nil {
+			return err
+		}
+		defer func() { err = errors.Join(err, bd.Close()) }()
+		if o.InputIdentity != "" {
+			dir, e := oci.ImageDir(o.CacheDir, o.To)
+			if e != nil {
+				return e
+			}
+			if oci.HasLocalManifest(dir) {
+				m, _, e := oci.ReadLocalManifest(ctx, dir)
+				if e != nil {
+					return e
+				}
+				if m.Annotations["com.agoda.macosvz.build.input-identity"] != o.InputIdentity || m.Annotations["com.agoda.macosvz.build.script-sha256"] != scriptSHA {
+					return errors.New("local target identity collision")
+				}
+				for _, l := range m.Layers {
+					if !oci.IsCached(l, dir) {
+						return errors.New("local target seal invalid")
+					}
+				}
+				logger.Infof("Reusing completed immutable image %s", o.To)
+				return nil
+			}
+		}
+	}
 
 	// Concurrency with the provider: Virtualization.framework allows 2 macOS VMs on the whole host
 	// and the provider has no endpoint to reserve a slot from another process. The simplest safe
@@ -162,11 +198,13 @@ func Run(ctx context.Context, o Options) (err error) {
 	}
 	logger.Infof("Base image %s is cached and verified (manifest %s)", o.From, img.ManifestDigest)
 
-	bd, err := buildutil.NewBuildDir(filepath.Join(o.CacheDir, "build"))
-	if err != nil {
-		return err
+	if bd == nil {
+		bd, err = buildutil.NewBuildDir(filepath.Join(o.CacheDir, "build"))
+		if err != nil {
+			return err
+		}
+		defer func() { err = errors.Join(err, bd.Close()) }()
 	}
-	defer func() { err = errors.Join(err, bd.Close()) }() // runs last: after the VM is stopped
 
 	// Abort and clean up if free space crosses the floor at any point (clone growth, push).
 	ctx, stopWatch := downloader.WatchFreeSpace(ctx, o.CacheDir, o.MinFreeBytes)
@@ -261,6 +299,7 @@ func Run(ctx context.Context, o Options) (err error) {
 		Aux:    auxPath,
 		Config: cfgPath,
 		Annotations: map[string]string{
+			"com.agoda.macosvz.build.input-identity":       o.InputIdentity,
 			"com.agoda.macosvz.build.base-ref":             o.From,
 			"com.agoda.macosvz.build.base-manifest-digest": img.ManifestDigest,
 			"com.agoda.macosvz.build.base-disk-digest":     baseDiskDigest,
@@ -273,7 +312,7 @@ func Run(ctx context.Context, o Options) (err error) {
 		push.Disk, push.Aux, push.Config = dataPath, "", ""
 	}
 	if o.Local {
-		res, err := buildutil.CacheLocal(ctx, push, o.CacheDir)
+		res, err := buildutil.CacheNativeLocal(ctx, push, o.CacheDir)
 		if err != nil {
 			return err
 		}
@@ -323,6 +362,9 @@ func cloneInputs(imageDir string, bd *buildutil.BuildDir, ownerUID uint32) error
 		}
 		if err := cloneFile(src, dst); err != nil {
 			return fmt.Errorf("failed to clone %s (the build dir must be on the cache volume): %w", name, err)
+		}
+		if err := unix.Chflags(dst, 0); err != nil {
+			return fmt.Errorf("failed to make build clone writable: %w", err)
 		}
 	}
 	cfg, err := buildutil.ReadFile(filepath.Join(imageDir, "config.json"), buildutil.FilePolicy{MaxSize: maxConfigSize, OwnerUID: ownerUID, ForbidBit: 0o022})
