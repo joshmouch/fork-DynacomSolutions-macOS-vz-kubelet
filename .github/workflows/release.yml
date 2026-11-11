@@ -63,7 +63,7 @@ jobs:
           with-limits -t 118s -- go build -v -trimpath k8s.io/api/...
       - name: Compile Kubernetes clients
         run: |
-          with-limits -t 118s -- go build -v -trimpath k8s.io/client-go/...
+          with-limits -t 118s -- go build -v -trimpath k8s.io/client-go/kubernetes
       - name: Compile API server
         run: |
           with-limits -t 118s -- go build -v -trimpath k8s.io/apiserver/pkg/server/options
