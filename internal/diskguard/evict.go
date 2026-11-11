@@ -43,7 +43,7 @@ func AllocatedBytes(dir string) (total uint64) {
 func SelectEvictions(entries []CacheEntry, inUse map[string]bool, free, needed, floor uint64) (evict []CacheEntry, ok bool) {
 	var cands []CacheEntry
 	for _, e := range entries {
-		if !inUse[e.Dir] && !oci.HasLocalManifest(e.Dir) {
+		if !inUse[e.Dir] && (!oci.HasLocalManifest(e.Dir) || oci.RebuildableLocal(e.Dir)) {
 			cands = append(cands, e)
 		}
 	}
@@ -65,7 +65,7 @@ func ListCache(root string) (entries []CacheEntry) {
 		if err != nil || !d.IsDir() || p == root {
 			return nil
 		}
-		if oci.HasLocalManifest(p) {
+		if oci.HasLocalManifest(p) && !oci.RebuildableLocal(p) {
 			log.G(context.Background()).Infof("Protecting local-only cached image %s from eviction", p)
 			return fs.SkipDir
 		}
@@ -85,8 +85,13 @@ func ListCache(root string) (entries []CacheEntry) {
 // EvictDir removes the files directly inside an image directory, then the directory
 // itself if it is now empty. It never recurses, so a nested image directory survives.
 func EvictDir(dir string) error {
-	if oci.HasLocalManifest(dir) {
+	if oci.HasLocalManifest(dir) && !oci.RebuildableLocal(dir) {
 		return fmt.Errorf("refusing to evict local-only image %s", dir)
+	}
+	if oci.HasLocalManifest(dir) {
+		if err := oci.ReleaseNativeFiles(dir); err != nil {
+			return err
+		}
 	}
 	files, err := os.ReadDir(dir)
 	if err != nil {
@@ -126,9 +131,15 @@ func MakeRoom(ctx context.Context, root string, protected map[string]bool, neede
 		if err := EvictDir(e.Dir); err != nil {
 			return fmt.Errorf("failed to evict %s: %w", e.Dir, err)
 		}
+		before := avail
 		if avail, err = free(); err != nil {
 			return err
 		}
+		var reclaimed uint64
+		if avail > before {
+			reclaimed = avail - before
+		}
+		log.G(ctx).Infof("Cache eviction measured free-space gain: %d bytes for %s (allocated estimate %d)", reclaimed, e.Dir, e.Size)
 	}
 	if !Fits(avail, needed, floor) {
 		return fmt.Errorf("%w: need %d bytes plus floor %d, available %d after eviction", ErrInsufficientSpace, needed, floor, avail)

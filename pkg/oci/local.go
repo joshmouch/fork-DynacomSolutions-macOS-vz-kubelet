@@ -177,6 +177,9 @@ func IsCached(l ocispec.Descriptor, dir string) bool {
 	if name == "" {
 		return false
 	}
+	if _, native := l.Annotations[AnnotationNativeSeal]; native {
+		return nativeCached(l, filepath.Join(dir, name))
+	}
 	fi, err := os.Stat(filepath.Join(dir, name))
 	if err != nil {
 		return false
@@ -201,6 +204,25 @@ func localLayerDigest(l ocispec.Descriptor) digest.Digest {
 func HasLocalManifest(dir string) bool {
 	_, err := os.Lstat(filepath.Join(dir, LocalManifestName))
 	return !os.IsNotExist(err)
+}
+
+// RebuildableLocal identifies graph-constructed cache entries, not imported
+// irreplaceable images. Damaged metadata and unverified seals stay protected.
+func RebuildableLocal(dir string) bool {
+	m, _, err := ReadLocalManifest(context.Background(), dir)
+	if err != nil {
+		return false
+	}
+	id := m.Annotations["com.agoda.macosvz.build.input-identity"]
+	if len(id) != 64 || digest.Digest("sha256:"+id).Validate() != nil || m.Annotations["com.agoda.macosvz.build.base-ref"] == "" {
+		return false
+	}
+	for _, l := range m.Layers {
+		if l.Annotations[AnnotationNativeSeal] == "" || !IsCached(l, dir) {
+			return false
+		}
+	}
+	return true
 }
 
 // CleanupStaleImports removes abandoned private staging directories. Symlinks
@@ -229,6 +251,9 @@ func CleanupStaleImports(cacheDir string) error {
 		}
 		if path != root && strings.HasPrefix(entry.Name(), ".import-") {
 			if info.ModTime().Before(cutoff) {
+				if err := ReleaseNativeFiles(path); err != nil {
+					return err
+				}
 				if err := os.RemoveAll(path); err != nil {
 					return err
 				}

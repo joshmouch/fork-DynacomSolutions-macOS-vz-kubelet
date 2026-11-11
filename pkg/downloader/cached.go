@@ -36,7 +36,7 @@ func VerifyCached(ctx context.Context, storePath, ref string, creds resource.Reg
 	m, d, err := oci.ReadLocalManifest(ctx, dir)
 	var layers []ocispec.Descriptor
 	manifestDigest := d.String()
-	if os.IsNotExist(err) {
+	if os.IsNotExist(err) && !oci.HasLocalManifest(dir) {
 		desc, remoteLayers, remoteErr := fetchLayers(ctx, ref, creds)
 		err, layers, manifestDigest = remoteErr, remoteLayers, desc.Digest.String()
 	} else {

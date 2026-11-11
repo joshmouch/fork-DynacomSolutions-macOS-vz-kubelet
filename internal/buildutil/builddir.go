@@ -1,10 +1,13 @@
 package buildutil
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/oci"
 )
@@ -23,6 +26,16 @@ type BuildDir struct {
 // NewBuildDir creates the build directory under root (created 0700 if missing; a symlink at
 // root is refused).
 func NewBuildDir(root string) (*BuildDir, error) {
+	return newBuildDir(context.Background(), root, false)
+}
+
+// AwaitBuildDir joins the existing build lock with cancellation. The caller
+// rechecks its immutable identity after admission, so followers reuse completion.
+func AwaitBuildDir(ctx context.Context, root string) (*BuildDir, error) {
+	return newBuildDir(ctx, root, true)
+}
+
+func newBuildDir(ctx context.Context, root string, wait bool) (*BuildDir, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
@@ -37,9 +50,21 @@ func NewBuildDir(root string) (*BuildDir, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		lock.Close()
-		return nil, fmt.Errorf("another build-image run holds the lock in %q: %w", root, err)
+	for {
+		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !wait || (!errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN)) {
+			lock.Close()
+			return nil, fmt.Errorf("another build-image run holds the lock in %q: %w", root, err)
+		}
+		select {
+		case <-ctx.Done():
+			lock.Close()
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 	if err := oci.CleanupStaleImports(filepath.Dir(root)); err != nil {
 		lock.Close()
