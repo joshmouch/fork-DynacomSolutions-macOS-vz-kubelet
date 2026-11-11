@@ -76,3 +76,20 @@ func TestReuseOnlyStopsBeforeVMAdmission(t *testing.T) {
 	})
 	require.ErrorIs(t, err, errBuildRequired)
 }
+
+func TestPendingDoesNotHideCustodyCleanupFailure(t *testing.T) {
+	require.True(t, onlyBuildRequired(errors.Join(errBuildRequired, nil)))
+	failure := errors.New("custody cleanup failed")
+	require.False(t, onlyBuildRequired(errors.Join(errBuildRequired, failure)))
+	previous := runStackLayer
+	defer func() { runStackLayer = previous }()
+	runStackLayer = func(_ context.Context, o Options) error {
+		if o.ReuseOnly {
+			return errors.Join(errBuildRequired, failure)
+		}
+		return nil
+	}
+	result, err := advanceStackLayers(context.Background(), Options{From: "base"}, "registry/runner", []StackLayer{{Name: "sdk"}, {Name: "node"}}, []string{"sdk", "node"}, 1)
+	require.ErrorIs(t, err, failure)
+	require.Empty(t, result.State)
+}

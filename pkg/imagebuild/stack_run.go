@@ -17,6 +17,16 @@ import (
 
 var errBuildRequired = errors.New("native image identity requires construction")
 
+// Run joins its result with custody cleanup. A failed cleanup is a failure,
+// never an otherwise successful pending outcome.
+func onlyBuildRequired(err error) bool {
+	if err == errBuildRequired {
+		return true
+	}
+	joined, ok := err.(interface{ Unwrap() []error })
+	return ok && len(joined.Unwrap()) == 1 && onlyBuildRequired(joined.Unwrap()[0])
+}
+
 // StackResult separates a settled prefix from completion of the requested stack.
 // Ref and InputIdentity belong to the last ready prefix, not the pending layer.
 type StackResult struct {
@@ -93,7 +103,7 @@ func advanceStackLayers(ctx context.Context, o Options, prefix string, layers []
 		reused := false
 		o.ReuseResult, o.ReuseOnly = &reused, maxNew > 0 && built >= maxNew
 		if err := runStackLayer(ctx, o); err != nil {
-			if errors.Is(err, errBuildRequired) && o.ReuseOnly {
+			if onlyBuildRequired(err) && o.ReuseOnly {
 				return result, nil
 			}
 			return StackResult{}, fmt.Errorf("layer %s (%s): %w", l.Name, ids[i], err)
