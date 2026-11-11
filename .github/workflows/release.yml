@@ -20,7 +20,8 @@ concurrency:
 jobs:
   release:
     name: darwin/arm64 release
-    runs-on: macos-15
+    # Keep the target native arm64 while avoiding the exhausted macOS 15 pool.
+    runs-on: macos-26
     timeout-minutes: 15
     env:
       VERSION: ${{ inputs.release_tag || github.ref_name }}

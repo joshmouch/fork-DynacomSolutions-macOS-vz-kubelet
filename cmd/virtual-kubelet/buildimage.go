@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -38,19 +39,20 @@ build unmounts it over SSH before the hard stop and fails if that does not work.
 func buildImageMain(args []string) int {
 	fs := flag.NewFlagSet("build-image", flag.ContinueOnError)
 	var (
-		from       = fs.String("from", "", "cached base image reference (name:tag)")
-		to         = fs.String("to", "", "image reference to push (name:tag)")
-		script     = fs.String("script", "", "absolute path of the provisioning script (owned by the invoking user, not group/other writable)")
-		creds      = fs.String("registry-creds-file", "", "absolute path of a 0600 JSON file owned by the invoking user, with username and password, or identityToken")
-		local      = fs.Bool("local", false, "install the result in the cache under --to (as import-tart --local) instead of pushing it; --registry-creds-file is then optional")
-		layersFile = fs.String("layers-file", "", "ordered graph projection plus per-layer provisioning scripts; local bootable stack, tags each retained prefix by its input digest")
-		cacheDir   = fs.String("cache-dir", "", "provider cache directory (default: the provider's)")
-		cpu        = fs.Uint("cpu", 4, "virtual CPUs of the build VM")
-		memoryGiB  = fs.Uint64("memory-gib", 8, "memory of the build VM in GiB")
-		growthGiB  = fs.Uint64("expected-growth-gib", 10, "disk growth of the clone expected from the script, in GiB")
-		dataGiB    = fs.Uint64("data-disk-gib", 0, "build a read-only data disk instead of a bootable image: attach a blank sparse disk of this many GiB (at most 256) to the build VM (the script formats and fills it, and leaves it unmountable cleanly) and push only that disk; 0 builds a normal image")
-		timeout    = fs.Duration("script-timeout", 3*time.Hour, "maximum run time of the script")
-		logLevel   = fs.String("log-level", "info", "log level")
+		from         = fs.String("from", "", "cached base image reference (name:tag)")
+		to           = fs.String("to", "", "image reference to push (name:tag)")
+		script       = fs.String("script", "", "absolute path of the provisioning script (owned by the invoking user, not group/other writable)")
+		creds        = fs.String("registry-creds-file", "", "absolute path of a 0600 JSON file owned by the invoking user, with username and password, or identityToken")
+		local        = fs.Bool("local", false, "install the result in the cache under --to (as import-tart --local) instead of pushing it; --registry-creds-file is then optional")
+		layersFile   = fs.String("layers-file", "", "ordered graph projection plus per-layer provisioning scripts; local bootable stack, tags each retained prefix by its input digest")
+		maxNewLayers = fs.Int("max-new-layers", 0, "construct at most this many missing stack components, reuse qualified prefixes, and emit STACK_RESULT JSON; 0 builds the entire stack")
+		cacheDir     = fs.String("cache-dir", "", "provider cache directory (default: the provider's)")
+		cpu          = fs.Uint("cpu", 4, "virtual CPUs of the build VM")
+		memoryGiB    = fs.Uint64("memory-gib", 8, "memory of the build VM in GiB")
+		growthGiB    = fs.Uint64("expected-growth-gib", 10, "disk growth of the clone expected from the script, in GiB")
+		dataGiB      = fs.Uint64("data-disk-gib", 0, "build a read-only data disk instead of a bootable image: attach a blank sparse disk of this many GiB (at most 256) to the build VM (the script formats and fills it, and leaves it unmountable cleanly) and push only that disk; 0 builds a normal image")
+		timeout      = fs.Duration("script-timeout", 3*time.Hour, "maximum run time of the script")
+		logLevel     = fs.String("log-level", "info", "log level")
 	)
 	var countUsers stringList
 	var attach stringList
@@ -63,6 +65,10 @@ func buildImageMain(args []string) int {
 	}
 	if *from == "" || *to == "" || (*script == "" && *layersFile == "") || (*creds == "" && !*local) {
 		fs.Usage()
+		return 2
+	}
+	if *maxNewLayers < 0 || (*maxNewLayers != 0 && *layersFile == "") {
+		fmt.Fprintln(os.Stderr, "--max-new-layers requires a stack and a nonnegative limit")
 		return 2
 	}
 	lvl, err := logrus.ParseLevel(*logLevel)
@@ -111,7 +117,16 @@ func buildImageMain(args []string) int {
 		CountVMUsers:     countUsers,
 	}
 	if *layersFile != "" {
-		err = imagebuild.RunStack(ctx, opts, *layersFile)
+		var result imagebuild.StackResult
+		result, err = imagebuild.AdvanceStack(ctx, opts, *layersFile, *maxNewLayers)
+		if err == nil && *maxNewLayers > 0 {
+			encoded, encodeErr := json.Marshal(result)
+			if encodeErr != nil {
+				err = encodeErr
+			} else {
+				fmt.Printf("STACK_RESULT=%s\n", encoded)
+			}
+		}
 	} else {
 		err = imagebuild.Run(ctx, opts)
 	}

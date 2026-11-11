@@ -21,6 +21,7 @@ var fixedNames = map[string]bool{"disk.img": true, "aux.img": true, "config.json
 type BuildDir struct {
 	dir  string
 	lock *os.File
+	waited bool
 }
 
 // NewBuildDir creates the build directory under root (created 0700 if missing; a symlink at
@@ -50,6 +51,7 @@ func newBuildDir(ctx context.Context, root string, wait bool) (*BuildDir, error)
 	if err != nil {
 		return nil, err
 	}
+	waited := false
 	for {
 		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
@@ -59,6 +61,7 @@ func newBuildDir(ctx context.Context, root string, wait bool) (*BuildDir, error)
 			lock.Close()
 			return nil, fmt.Errorf("another build-image run holds the lock in %q: %w", root, err)
 		}
+		waited = true
 		select {
 		case <-ctx.Done():
 			lock.Close()
@@ -82,8 +85,12 @@ func newBuildDir(ctx context.Context, root string, wait bool) (*BuildDir, error)
 		lock.Close()
 		return nil, err
 	}
-	return &BuildDir{dir: dir, lock: lock}, nil
+	return &BuildDir{dir: dir, lock: lock, waited: waited}, nil
 }
+
+// Waited reports actual contention encountered by this admission, not elapsed
+// time. A bounded caller can reuse completion without adding another VM boot.
+func (b *BuildDir) Waited() bool { return b.waited }
 
 // Path returns the path of one of the fixed build files.
 func (b *BuildDir) Path(name string) (string, error) {

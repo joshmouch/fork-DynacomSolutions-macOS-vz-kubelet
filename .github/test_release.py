@@ -38,6 +38,11 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('git rev-parse "refs/tags/${VERSION}^{commit}"', verification["run"])
         self.assertIn("release-${{ inputs.release_tag || github.ref_name }}", self.workflow)
 
+    def test_release_uses_native_arm64_pool_without_extending_deadlines(self):
+        self.assertIn("runs-on: macos-26", self.workflow)
+        self.assertIn("timeout-minutes: 15", self.workflow)
+        self.assertNotIn("GOARCH: amd64", self.workflow)
+
     def run_resume(self, response, exit_code=0, error=""):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)

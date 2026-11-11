@@ -15,6 +15,7 @@ func TestAwaitBuildDirCancellationAndJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer first.Close()
+	if first.Waited() { t.Fatal("uncontended constructor reported a wait") }
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := AwaitBuildDir(ctx, root); !errors.Is(err, context.Canceled) {
@@ -26,6 +27,7 @@ func TestAwaitBuildDirCancellationAndJoin(t *testing.T) {
 	go func() {
 		next, err := AwaitBuildDir(ctx, root)
 		if err == nil {
+			if !next.Waited() { t.Error("joined constructor lost its contention observation") }
 			err = next.Close()
 		}
 		done <- err

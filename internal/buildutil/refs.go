@@ -8,7 +8,7 @@ import (
 )
 
 // CheckRefs validates the --from and --to references of a build: both parse as OCI
-// references with a tag (no digest), they differ, and both start with one of the allowed
+// references: the input may be digest-pinned, the output is tagged, they differ, and both start with one of the allowed
 // prefixes. The build runs as root and writes to a registry, so an empty allowlist is refused
 // rather than treated as "allow all".
 func CheckRefs(from, to string, prefixes []string, allowed func([]string, string) bool) error {
@@ -20,8 +20,11 @@ func CheckRefs(from, to string, prefixes []string, allowed func([]string, string
 		if err != nil {
 			return fmt.Errorf("%s %q: %w", r.flag, r.ref, err)
 		}
-		if repo.Reference.Reference == "" || strings.Contains(r.ref, "@") {
-			return fmt.Errorf("%s %q must be name:tag, not a digest or untagged", r.flag, r.ref)
+		if repo.Reference.Reference == "" || (r.flag == "--to" && strings.Contains(r.ref, "@")) {
+			return fmt.Errorf("%s %q requires an explicit input tag/digest or output tag", r.flag, r.ref)
+		}
+		if strings.Contains(r.ref, "@") && repo.Reference.ValidateReferenceAsDigest() != nil {
+			return fmt.Errorf("%s %q has an invalid digest", r.flag, r.ref)
 		}
 		if !allowed(prefixes, r.ref) {
 			return fmt.Errorf("%s %q is not allowed: it must start with one of %v (VZ_ALLOWED_IMAGE_PREFIXES)", r.flag, r.ref, prefixes)
