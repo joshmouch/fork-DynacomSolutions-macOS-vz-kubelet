@@ -60,6 +60,10 @@ type Options struct {
 	// InputIdentity is the graph-derived immutable ordered-prefix identity.
 	InputIdentity        string
 	ExpectedScriptDigest string
+	// ReuseOnly admits an already sealed identity under the existing build lock,
+	// but never starts a VM. ReuseResult reports that decision to stack admission.
+	ReuseOnly   bool
+	ReuseResult *bool
 
 	Prefixes       []string // VZ_ALLOWED_IMAGE_PREFIXES
 	MinFreeBytes   uint64   // VZ_MIN_FREE_BYTES floor, 0 disables
@@ -166,9 +170,15 @@ func Run(ctx context.Context, o Options) (err error) {
 					}
 				}
 				logger.Infof("Reusing completed immutable image %s", o.To)
+				if o.ReuseResult != nil {
+					*o.ReuseResult = true
+				}
 				return nil
 			}
 		}
+	}
+	if o.ReuseOnly {
+		return errBuildRequired
 	}
 
 	// Concurrency with the provider: Virtualization.framework allows 2 macOS VMs on the whole host

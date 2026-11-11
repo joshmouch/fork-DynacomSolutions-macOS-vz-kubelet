@@ -189,6 +189,34 @@ MacOSVK build-image --from <registry/ns/name:tag> --to <registry/ns/name:tag> \
 - `--data-disk-gib N` builds a data disk instead: a blank sparse raw disk of N GiB (at most 256) is attached to the build VM as a second writable device, the script finds it and formats it (for example `diskutil eraseDisk APFS Xcode GPT diskN`), and only that disk is pushed as a one-layer image. The recipe must leave the data disk unmountable cleanly (no open files, no process using it): before the host stop the build unmounts it over SSH (`sudo -n diskutil unmountDisk force`, on the one physical disk of exactly N GiB) and fails if that does not work. The boot clone is discarded. Size N tightly: the disk is filled, so the free-space check requires `--expected-growth-gib` plus N GiB, and the disk guard reserves the full N GiB on every node that pulls the image. Pods attach the result with the `dynacom.dev/data-disks` annotation (see Storage).
 - It refuses to run while a macOS virtual machine owned by root or by the user running the build (the provider's) is running, or one owned by a user named with `--count-vm-user` (repeatable); Linux VMs such as Colima's are not counted, and a failure to enumerate refuses the run. It honours `VZ_MIN_FREE_BYTES` throughout, and always deletes the clone. Peak extra disk is the blocks the script changes (`--expected-growth-gib`, default 10).
 
+### Bounded ordered stack advancement
+
+The graph owner supplies dependency-ordered components using `--layers-file`.
+The native builder hashes the verified base, payload identities and actual recipe
+bytes, and retains each exact prefix in the existing local cache. To construct
+at most one missing component per invocation:
+
+```sh
+MacOSVK build-image --local --from registry/ns/base@sha256:<digest> \
+  --to registry/ns/runner:request --layers-file /abs/path/layers.json \
+  --max-new-layers 1
+```
+
+A successful bounded invocation ends with `STACK_RESULT=` followed by one JSON
+object: `state` is `pending` or `complete`; `ready` and `total` count components;
+`ref` and `inputIdentity` identify the last qualified prefix. Pending is an
+explicit resumable outcome, not completion. Invoke the same request again to
+reuse that prefix and advance. A cache-only repeat reports complete without
+starting a VM. A failed construction emits no successful stack result.
+
+Budget admission and seal verification share the existing native build lock.
+A concurrent follower's reuse does not consume its construction budget, and an
+evicted component cannot cause an extra unbudgeted VM boot. Zero preserves the
+whole-stack operation. Each new prefix still uses one VM boot and stopped-disk
+publication; batching live disk snapshots is not substituted for consistent
+prefix seals. Measure aggregate cold-stack time separately from each bounded
+component invocation.
+
 ## Importing a Tart image
 
 `MacOSVK import-tart --local` converts a public Tart disk-v2 image directly into
