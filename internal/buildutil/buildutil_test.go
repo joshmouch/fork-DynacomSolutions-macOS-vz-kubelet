@@ -85,7 +85,9 @@ func TestCheckRefs(t *testing.T) {
 	assert.Error(t, ok("registry.example.com/other/a:1", "registry.example.com/macos-vz/a:2"), "from outside prefix")
 	assert.Error(t, ok("registry.example.com.evil.io/macos-vz/a:1", "registry.example.com/macos-vz/a:2"), "lookalike host")
 	assert.Error(t, ok("registry.example.com/macos-vz/a", "registry.example.com/macos-vz/a:2"), "untagged")
-	assert.Error(t, ok("registry.example.com/macos-vz/a@sha256:"+strings.Repeat("a", 64), "registry.example.com/macos-vz/a:2"), "digest")
+	assert.NoError(t, ok("registry.example.com/macos-vz/a@sha256:"+strings.Repeat("a", 64), "registry.example.com/macos-vz/a:2"), "immutable base digest")
+	assert.Error(t, ok("registry.example.com/macos-vz/a@sha256:invalid", "registry.example.com/macos-vz/a:2"), "invalid input digest")
+	assert.Error(t, ok("registry.example.com/macos-vz/a:1", "registry.example.com/macos-vz/a@sha256:"+strings.Repeat("a", 64)), "output must remain a tag")
 	assert.Error(t, CheckRefs("registry.example.com/macos-vz/a:1", "registry.example.com/macos-vz/a:2", nil, envcfg.ImageAllowed), "empty allowlist is refused")
 }
 
