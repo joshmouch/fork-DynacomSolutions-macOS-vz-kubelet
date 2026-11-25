@@ -9,6 +9,7 @@ import (
 	"time"
 
 	vmdata "github.com/agoda-com/macOS-vz-kubelet/internal/data/vm"
+	"github.com/agoda-com/macOS-vz-kubelet/internal/envcfg"
 	"github.com/agoda-com/macOS-vz-kubelet/internal/execerror"
 	"github.com/agoda-com/macOS-vz-kubelet/internal/execwindow"
 	"github.com/agoda-com/macOS-vz-kubelet/internal/sshconn"
@@ -16,6 +17,7 @@ import (
 	"github.com/agoda-com/macOS-vz-kubelet/internal/volumes"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/downloader"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/event"
+	"github.com/agoda-com/macOS-vz-kubelet/pkg/imagevolume"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/resource"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/vm"
 	"github.com/agoda-com/macOS-vz-kubelet/pkg/vm/config"
@@ -55,6 +57,9 @@ type VirtualMachineParams struct {
 	RegistryCreds    resource.RegistryCredentials
 	// DataDisks are attached read-only after the boot disk, in order (see resource.DataDisksAnnotation).
 	DataDisks []DataDisk
+	// ImageVolumes are Kubernetes image volumes: each image is materialized on the host
+	// (pkg/imagevolume) while the boot image downloads, then shared read-only like a hostPath.
+	ImageVolumes []ImageVolume
 }
 
 // DataDisk is a data disk image to pull and attach.
@@ -63,9 +68,16 @@ type DataDisk struct {
 	RegistryCreds resource.RegistryCredentials
 }
 
+// ImageVolume is one image volume mount of the macOS container.
+type ImageVolume struct {
+	Mount         volumes.ImageMount
+	RegistryCreds resource.RegistryCredentials
+}
+
 // MacOSClient manages the lifecycle of macOS virtual machines.
 type MacOSClient struct {
 	downloadManager *downloader.Manager
+	imageVolumes    *imagevolume.Store
 	vms             vmdata.VirtualMachineData
 
 	eventRecorder              event.EventRecorder
@@ -89,6 +101,7 @@ func NewMacOSClient(ctx context.Context, eventRecorder event.EventRecorder, netw
 		eventRecorder:              eventRecorder,
 		networkInterfaceIdentifier: networkInterfaceIdentifier,
 		downloadManager:            downloader.NewManager(eventRecorder, cachePath),
+		imageVolumes:               imagevolume.New(cachePath, envcfg.MinFreeBytes()),
 		vmPermits:                  make(chan struct{}, vmcap.Configured()),
 		vms:                        vmdata.NewVirtualMachineData(),
 		executions:                 execwindow.FromEnv(),
@@ -129,6 +142,9 @@ func (c *MacOSClient) CreateVirtualMachine(ctx context.Context, params VirtualMa
 	c.eventRecorder.PullingImage(ctx, params.Image, params.ContainerName)
 	for _, d := range params.DataDisks {
 		c.eventRecorder.PullingImage(ctx, d.Ref, params.ContainerName)
+	}
+	for _, v := range params.ImageVolumes {
+		c.eventRecorder.PullingImage(ctx, v.Mount.Ref, params.ContainerName)
 	}
 
 	// Start the asynchronous creation of the virtual machine
@@ -180,9 +196,20 @@ func (c *MacOSClient) handleVirtualMachineCreation(ctx context.Context, params V
 			return err
 		})
 	}
+	imageMounts := make([]volumes.Mount, len(params.ImageVolumes))
+	for i, v := range params.ImageVolumes {
+		g.Go(func() error {
+			started := time.Now()
+			dir, err := c.imageVolumes.Materialize(gctx, v.Mount.Ref, v.RegistryCreds)
+			c.reportPull(ctx, v.Mount.Ref, params.ContainerName, time.Since(started), err)
+			imageMounts[i] = volumes.Mount{Name: v.Mount.Name, ContainerPath: v.Mount.ContainerPath, HostPath: dir, ReadOnly: true}
+			return err
+		})
+	}
 	if err = g.Wait(); err != nil {
 		return
 	}
+	params.Mounts = append(params.Mounts, imageMounts...)
 
 	logger.Debug(cfg)
 
