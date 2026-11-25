@@ -136,3 +136,77 @@ func TestEmitPostsAnExecutionTelemetryLine(t *testing.T) {
 	assert.Equal(t, "pod:ai-fleet/arc-macos/runner-1", line.Event.Payload.Limits["execution.id"])
 	assert.EqualValues(t, 4, line.Event.Payload.Limits["bound.cpu.peak"])
 }
+
+func TestNodeWindowCountsFromItsFirstReadingWithItsHostParentAndNoBounds(t *testing.T) {
+	s := Subject{ID: NodeID("ai-fleet", "macos-josh-mac"), Parent: "host:josh-mac/macos", Level: NodeLevel, Binding: NodeBinding}
+	w := Resume(s, reading(0, 5000, 300, 0))
+	w.Observe(reading(5, 6500, 400, 0))
+	rec, _ := w.Record(t0.Add(5 * time.Second))
+
+	assert.Equal(t, "node:ai-fleet/macos-josh-mac", rec["execution.id"])
+	assert.Equal(t, "host:josh-mac/macos", rec["relation.parent"])
+	assert.Equal(t, "node", rec["execution.level"])
+	assert.Equal(t, "vz-provider", rec["execution.binding"])
+	assert.NotContains(t, rec, "bound.cpu.peak")
+	assert.NotContains(t, rec, "bound.memory.peak")
+	assert.Equal(t, t0.UnixMilli(), rec["execution.started_at_ms"])
+	assert.InDelta(t, 1500.0, rec["usage.cpu.total"], 1e-6) // only what ran since the first reading
+	assert.Equal(t, "sample:1000", rec["usage_method.memory.peak"])
+	assertEveryUsageCellStatesItsMethod(t, rec)
+}
+
+func TestNodeMeterHoldsEveryTrackedVMInsideTheNode(t *testing.T) {
+	r := NewRecorder("ai-fleet", "macos-josh-mac", &collect{})
+	self := &fakeMeter{readings: []Reading{reading(0, 1000, 100, 0), reading(1, 1500, 100, 0), reading(2, 1600, 100, 0), reading(3, 1700, 100, 0)}}
+	m := &nodeMeter{r: r, self: self}
+	read := func() Reading { got, err := m.Read(); require.NoError(t, err); return got }
+
+	assert.Equal(t, uint64(0), read().CPUNanos) // the first reading is the baseline
+	r.vms["pod:ai-fleet/arc-macos/runner-1"] = &fakeMeter{readings: []Reading{reading(1, 300, 2000, 0), reading(2, 500, 2100, 0)}}
+	second := read()
+	assert.Equal(t, uint64(800*1e6), second.CPUNanos) // the provider's 500 ms and all 300 ms of the VM that began since
+	assert.Equal(t, uint64(2100<<20), second.Footprint)
+	assert.Equal(t, uint64(1100*1e6), read().CPUNanos) // 100 ms more of its own, 200 ms more of the VM's
+	delete(r.vms, "pod:ai-fleet/arc-macos/runner-1")
+	assert.Equal(t, uint64(1200*1e6), read().CPUNanos) // the VM is gone and keeps what it used
+}
+
+func TestRunNodeWritesTheNodesWindows(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sink := &cancelAfter{n: 2, cancel: cancel}
+	r := NewRecorder("ai-fleet", "macos-josh-mac", sink)
+	r.nodeParent = "host:josh-mac/macos"
+	r.every = time.Millisecond
+	clock := t0
+	r.now = func() time.Time { clock = clock.Add(time.Second); return clock }
+	cpu := uint64(0)
+	r.self = func() (Meter, error) {
+		return meterFunc(func() (Reading, error) { cpu += 100; return reading(0, cpu, 50, 0), nil }), nil
+	}
+	r.RunNode(ctx)
+
+	require.Len(t, sink.got, 2)
+	for _, rec := range sink.got {
+		assert.Equal(t, "node:ai-fleet/macos-josh-mac", rec["execution.id"])
+		assert.Equal(t, "host:josh-mac/macos", rec["relation.parent"])
+		assert.InDelta(t, 1000.0, rec["usage.cpu.total"], 1e-6) // 100 ms a second over a 10 s window
+	}
+}
+
+type meterFunc func() (Reading, error)
+
+func (f meterFunc) Read() (Reading, error) { return f() }
+
+type cancelAfter struct {
+	collect
+	n      int
+	cancel context.CancelFunc
+}
+
+func (c *cancelAfter) Emit(ctx context.Context, limits map[string]any, at time.Time) error {
+	_ = c.collect.Emit(ctx, limits, at)
+	if len(c.got) >= c.n {
+		c.cancel()
+	}
+	return nil
+}

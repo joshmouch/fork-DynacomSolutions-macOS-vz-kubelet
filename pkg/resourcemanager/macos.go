@@ -93,6 +93,8 @@ func NewMacOSClient(ctx context.Context, eventRecorder event.EventRecorder, netw
 		vms:                        vmdata.NewVirtualMachineData(),
 		executions:                 execwindow.FromEnv(),
 	}
+	// The node's own row, the Pods' parent, for the provider's life.
+	go c.executions.RunNode(context.WithoutCancel(ctx))
 	// Images referenced by any Pod/VM on this node must never be evicted.
 	c.downloadManager.SetInUse(func() (refs []string) {
 		for _, info := range c.vms.All() {

@@ -86,6 +86,9 @@ func vmProcessIDs() []int {
 	return out
 }
 
+// SelfMeter reads this provider's own process.
+func SelfMeter() (Meter, error) { return process{pid: C.pid_t(os.Getpid())}, nil }
+
 // SnapshotVMProcesses lists the VM host processes that exist now. Take it before the VM is created.
 func SnapshotVMProcesses() map[int]bool {
 	seen := map[int]bool{}

@@ -11,3 +11,8 @@ func SnapshotVMProcesses() map[int]bool { return map[int]bool{} }
 func FindVMProcess(map[int]bool) Finder {
 	return func() (Meter, error) { return nil, errors.New("VM host processes exist only on macOS") }
 }
+
+// SelfMeter reads nothing off macOS, where the provider does not run.
+func SelfMeter() (Meter, error) {
+	return nil, errors.New("the provider's process is read only on macOS")
+}

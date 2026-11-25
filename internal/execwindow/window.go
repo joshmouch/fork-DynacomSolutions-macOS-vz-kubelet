@@ -16,6 +16,10 @@ const (
 	Binding = "vz-vm"
 	// Level is the execution tree level of one Pod.
 	Level = "pod"
+	// NodeBinding names the node's observer: this provider's own process and the VM host processes it owns.
+	NodeBinding = "vz-provider"
+	// NodeLevel is the execution tree level of the virtual node.
+	NodeLevel = "node"
 	// WindowEvery is the window length, as ai-fleet's sampler writes for an execution.
 	WindowEvery = 10 * time.Second
 	// SampleEvery is the reading interval; a cell folded from readings is sample:<this in ms>.
@@ -25,12 +29,14 @@ const (
 	sampled = "sample:1000"
 )
 
-// Subject is one execution: a Pod's VM, with the bounds it was built with.
+// Subject is one execution: a Pod's VM, with the bounds it was built with, or the virtual node (Level node, no bounds).
 type Subject struct {
-	ID          string // pod:<cluster>/<namespace>/<name>
-	Parent      string // node:<cluster>/<node>
-	VCPU        uint
-	MemoryBytes uint64
+	ID          string // pod:<cluster>/<namespace>/<name>, or node:<cluster>/<node>
+	Parent      string // node:<cluster>/<node>, or the node's host (host:<machine>/<os>); empty writes no parent
+	Level       string // empty is a Pod (Level)
+	Binding     string // empty is a Pod's VM (Binding)
+	VCPU        uint   // 0 writes no bound
+	MemoryBytes uint64 // 0 writes no bound
 	Started     time.Time
 }
 
@@ -60,6 +66,13 @@ type Window struct {
 // First returns the window that starts at the VM's start: the process began then, so its counters count from zero.
 func First(s Subject) *Window { return &Window{subject: s, start: s.Started} }
 
+// Resume returns the window that starts at a reading of counters that began before it (the node's processes were running):
+// it counts from that reading.
+func Resume(s Subject, r Reading) *Window {
+	cp := r
+	return &Window{subject: s, start: r.At, baseCPU: r.CPUNanos, markStart: r.LifetimeMaxFootprint, last: &cp, peak: r.Footprint}
+}
+
 // Observe folds one reading into the window.
 func (w *Window) Observe(r Reading) {
 	if w.last != nil && r.At.After(w.last.At) {
@@ -84,11 +97,27 @@ func (w *Window) Due(now time.Time) bool { return now.Sub(w.start) >= WindowEver
 // Record returns the window's flat map (the payload.limits of the envelope) ending at end, and the window that follows it.
 func (w *Window) Record(end time.Time) (map[string]any, *Window) {
 	s := w.subject
+	level, binding := s.Level, s.Binding
+	if level == "" {
+		level = Level
+	}
+	if binding == "" {
+		binding = Binding
+	}
 	out := map[string]any{
-		"execution.id": s.ID, "relation.parent": s.Parent, "execution.level": Level, "execution.binding": Binding,
+		"execution.id": s.ID, "execution.level": level, "execution.binding": binding,
 		"execution.started_at_ms": w.start.UnixMilli(), "execution.ended_at_ms": end.UnixMilli(),
 		"usage.wallTime.total": end.Sub(w.start).Milliseconds(), "usage_method.wallTime.total": counter, "usage_status.wallTime.total": "complete",
-		"bound.cpu.peak": s.VCPU, "bound.memory.peak": s.MemoryBytes, "bound.contract": Contract,
+		"bound.contract": Contract,
+	}
+	if s.Parent != "" {
+		out["relation.parent"] = s.Parent
+	}
+	if s.VCPU > 0 {
+		out["bound.cpu.peak"] = s.VCPU
+	}
+	if s.MemoryBytes > 0 {
+		out["bound.memory.peak"] = s.MemoryBytes
 	}
 	next := &Window{subject: s, start: end}
 	if w.last == nil {
