@@ -205,7 +205,9 @@ func (s *Store) apply(ctx context.Context, repo Fetcher, ref string, index int, 
 	if err := Apply(work, stream); err != nil {
 		return err
 	}
-	if _, err := io.Copy(io.Discard, stream); err != nil { // trailing padding, so the digest covers the whole blob
+	// Drain the trailing padding so the digest covers the whole blob. The struct hides the decompressor's WriteTo:
+	// pgzip's panics when called after the stream has ended (slice bounds out of range in gunzip.go WriteTo).
+	if _, err := io.Copy(io.Discard, struct{ io.Reader }{stream}); err != nil {
 		return err
 	}
 	if err := verified.Verify(); err != nil {
