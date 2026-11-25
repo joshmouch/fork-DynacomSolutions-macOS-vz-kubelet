@@ -10,6 +10,7 @@ import (
 
 	vmdata "github.com/agoda-com/macOS-vz-kubelet/internal/data/vm"
 	"github.com/agoda-com/macOS-vz-kubelet/internal/execerror"
+	"github.com/agoda-com/macOS-vz-kubelet/internal/execwindow"
 	"github.com/agoda-com/macOS-vz-kubelet/internal/sshconn"
 	"github.com/agoda-com/macOS-vz-kubelet/internal/vmcap"
 	"github.com/agoda-com/macOS-vz-kubelet/internal/volumes"
@@ -71,6 +72,8 @@ type MacOSClient struct {
 	networkInterfaceIdentifier string
 	vmPermits                  chan struct{}
 	hookLogs                   hookLogStore
+	// executions writes one bounded-execution window per VM; nil unless the environment turns it on (execwindow.FromEnv).
+	executions *execwindow.Recorder
 }
 
 // NewMacOSClient initializes a new MacOSClient instance.
@@ -88,6 +91,7 @@ func NewMacOSClient(ctx context.Context, eventRecorder event.EventRecorder, netw
 		downloadManager:            downloader.NewManager(eventRecorder, cachePath),
 		vmPermits:                  make(chan struct{}, vmcap.Configured()),
 		vms:                        vmdata.NewVirtualMachineData(),
+		executions:                 execwindow.FromEnv(),
 	}
 	// Images referenced by any Pod/VM on this node must never be evicted.
 	c.downloadManager.SetInUse(func() (refs []string) {
@@ -195,6 +199,9 @@ func (c *MacOSClient) handleVirtualMachineCreation(ctx context.Context, params V
 	}
 	defer guard.Release(ctx)
 
+	// The VM's host process is the one that appears from here on; its counters begin with the VM.
+	hostProcessesBefore := execwindow.SnapshotVMProcesses()
+
 	// Create the virtual machine instance
 	vm, err := c.createVirtualMachineInstance(ctx, cfg, disks, params)
 	if err != nil {
@@ -202,12 +209,15 @@ func (c *MacOSClient) handleVirtualMachineCreation(ctx context.Context, params V
 	}
 
 	// Start the virtual machine
+	startedAt := time.Now()
 	err = vm.Start(ctx)
 	if err != nil {
 		c.eventRecorder.FailedToStartContainer(ctx, params.ContainerName, err)
 		return
 	}
 	guard.Commit()
+	go c.executions.Track(ctx, params.Namespace, params.Name, params.CPU, params.MemorySize, startedAt,
+		execwindow.FindVMProcess(hostProcessesBefore), vm.Ended)
 	c.eventRecorder.StartedContainer(ctx, params.ContainerName)
 
 	if params.PostStartAction == nil {

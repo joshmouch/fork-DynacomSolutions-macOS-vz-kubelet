@@ -109,6 +109,12 @@ func (i *VirtualMachineInstance) handleStateChanges(ctx context.Context) {
 	}
 }
 
+// Ended reports whether the virtual machine has stopped for good: stopped, or failed.
+func (i *VirtualMachineInstance) Ended() bool {
+	state := i.State()
+	return state == vz.VirtualMachineStateStopped || state == vz.VirtualMachineStateError
+}
+
 // Start starts the virtual machine instance and retrieves the IP address.
 func (i *VirtualMachineInstance) Start(ctx context.Context, opts ...vz.VirtualMachineStartOption) (err error) {
 	ctx, span := trace.StartSpan(ctx, "VirtualMachineInstance.Start")
