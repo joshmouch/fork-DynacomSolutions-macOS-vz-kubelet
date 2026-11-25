@@ -70,6 +70,7 @@ type MacOSClient struct {
 	eventRecorder              event.EventRecorder
 	networkInterfaceIdentifier string
 	vmPermits                  chan struct{}
+	hookLogs                   hookLogStore
 }
 
 // NewMacOSClient initializes a new MacOSClient instance.

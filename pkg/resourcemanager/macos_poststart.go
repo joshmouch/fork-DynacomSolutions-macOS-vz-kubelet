@@ -55,7 +55,9 @@ func (c *MacOSClient) execPostStartAction(ctx context.Context, namespace, name s
 
 	execCtx, cancel := context.WithTimeout(ctx, action.TimeoutDuration)
 	defer cancel()
-	err = c.ExecInVirtualMachine(execCtx, namespace, name, action.Command, node.DiscardingExecIO())
+	// The hook's output is the pod's log (HookLogs), served by the kubelet's log endpoint after the VM has stopped.
+	output := c.hookLogs.open(namespace, name)
+	err = c.ExecInVirtualMachine(execCtx, namespace, name, action.Command, node.NewExecIO(false, nil, output, output, nil))
 	if execCtx.Err() != nil {
 		// Prefer the timeout cause over the transport error it surfaces as.
 		return execCtx.Err()

@@ -508,7 +508,13 @@ func (c *VzClientAPIs) GetContainerLogs(ctx context.Context, namespace, podName,
 		return c.ContainerClient.GetContainerLogs(ctx, namespace, podName, containerName, opts)
 	}
 
-	return nil, errdefs.InvalidInput("container logs are not supported for macOS virtual machines")
+	if c.MacOSClient != nil {
+		if logs, ok := c.MacOSClient.HookLogs(namespace, podName, opts.Tail); ok {
+			return logs, nil
+		}
+	}
+
+	return nil, errdefs.NotFoundf("no post-start output is retained for %s/%s (it never ran a hook under this provider, or the provider restarted)", namespace, podName)
 }
 
 // ExecuteContainerCommand executes a command inside a specified container.
