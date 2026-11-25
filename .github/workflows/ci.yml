@@ -12,6 +12,8 @@ permissions:
 jobs:
   test:
     name: vet, test, build
+    permissions:
+      contents: write
     # GitHub-hosted arm64 runner only: this repository is public.
     runs-on: macos-15
     timeout-minutes: 30
@@ -26,3 +28,16 @@ jobs:
         run: go test ./...
       - name: make build
         run: make build
+      - name: package release archive
+        run: makefiles/scripts/package-release.sh
+      # The account's artifact storage quota is spent, and the cluster keeps native outputs off GitHub storage, so the archive is
+      # published as a release of the repository this job runs in: the cluster's private mirror, where the tested bytes are
+      # the release's assets. A version already released is kept as it is.
+      - name: publish release
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(tr -d '[:space:]' <VERSION)
+          if gh release view "$VERSION" >/dev/null 2>&1; then echo "release $VERSION exists"; exit 0; fi
+          gh release create "$VERSION" dist/macos-vz-kubelet_* --target "$(git rev-parse HEAD)" --title "$VERSION" --notes "darwin/arm64 build of the tested commit, ad-hoc signed with the virtualization entitlement."
