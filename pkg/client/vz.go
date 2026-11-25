@@ -191,6 +191,29 @@ func (c *VzClientAPIs) CreateVirtualizationGroup(ctx context.Context, pod *corev
 		}
 	}
 
+	// Image volumes are pulled by the host and shared read-only into the VM: only the macOS
+	// container may mount one, and each image passes the same checks as the VM's image.
+	var imageVolumes []rm.ImageVolume
+	for i, ct := range pod.Spec.Containers {
+		ims, err := volumes.ImageMounts(ct, pod)
+		if err != nil {
+			return errdefs.AsInvalidInput(err)
+		}
+		if len(ims) > 0 && (i > 0 || linuxOnly) {
+			return errdefs.InvalidInputf("container %q mounts an image volume; only the macOS container can on this node", ct.Name)
+		}
+		for _, m := range ims {
+			if err = downloader.ValidateImageReference(m.Ref); err != nil {
+				return errdefs.InvalidInputf("invalid image volume reference %q: %v", m.Ref, err)
+			}
+			if !envcfg.ImageAllowed(prefixes, m.Ref) {
+				return errdefs.InvalidInputf("image volume %q is not allowed on this node: it must start with one of %v (VZ_ALLOWED_IMAGE_PREFIXES)", m.Ref, prefixes)
+			}
+			volumeCreds, _ := creds.ForImage(m.Ref)
+			imageVolumes = append(imageVolumes, rm.ImageVolume{Mount: m, RegistryCreds: volumeCreds})
+		}
+	}
+
 	// Due to the nature of virtual kubelet CreatePod context,
 	// we need to handle the context cancellation on demand ourselves
 	ctx, extras.cancelFunc = context.WithCancel(ctx)
@@ -236,6 +259,7 @@ func (c *VzClientAPIs) CreateVirtualizationGroup(ctx context.Context, pod *corev
 			IgnoreImageCache: pullPolicy == corev1.PullAlways,
 			RegistryCreds:    vmCreds,
 			DataDisks:        dataDiskParams(dataDisks, creds),
+			ImageVolumes:     imageVolumes,
 		})
 	})
 

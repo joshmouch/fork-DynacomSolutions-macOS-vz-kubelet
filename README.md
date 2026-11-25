@@ -363,6 +363,7 @@ defines an exec postStart hook, Ready is gated on that hook finishing successful
 |--------------------------|:---------:|--------------------------------------------|
 | Host volumes             | ⚠️        | Denied unless allowed by `VZ_HOSTPATH_ALLOWLIST`. |
 | Data disks               | ✅        | Read-only images attached as block devices. See below. |
+| Image volumes            | ✅        | OCI image trees pulled by the host and shared read-only. See below. |
 | Empty dir volumes        | ✅        | `sizeLimit` is not enforced.               |
 | Persistent volumes       | ❌        | Unsupported by Virtual Kubelet in general. |
 | Config map volumes       | ❌        | On the short list.                         |
@@ -376,6 +377,19 @@ invalid annotation fails the create with an invalid-input error. The images are 
 registry credentials (`imagePullPolicy` does not apply: a cached copy with a matching digest is used), cached like any image and never
 evicted while a pod uses them. Two VMs share one cached file read-only. A data disk is built with `build-image --data-disk-gib`
 and cannot be booted: using one as the pod image fails with "image is a data disk, not a bootable VM image".
+
+**Image volumes.** A Kubernetes [image volume](https://kubernetes.io/docs/concepts/storage/volumes/#image)
+(`volumes[].image.reference`) mounted by the macOS container is pulled by the host, not the guest, so a guest
+whose egress is closed still receives it. The image is any OCI image of tar layers (tar, tar+gzip, tar+zstd), for
+example a `FROM scratch` stage a Linux BuildKit build pushes. Its layers are applied in order under
+`<cache>/image-volumes/chains`, one directory per layer chain: an APFS clone (`clonefile`) of the chain below plus that
+layer, with OCI whiteouts and no entry written outside the tree (a path never resolves through a symlink of the
+tree). Images sharing lower layers share their trees, and a chain appears only once complete, so a cancelled pull
+resumes at the first missing chain. A chain is built once however many pods ask, detached from the asking pod for up
+to 15 minutes, so a pod deleted mid-pull still leaves it cached. The tree is shared read-only over VirtioFS and
+appears in the guest at `/Volumes/My Shared Files/<base name of mountPath>`. Each reference must start with an entry of
+`VZ_ALLOWED_IMAGE_PREFIXES` and uses the pod's registry credentials; `subPath` and image volumes on side-car
+containers are refused. Unused chains are not yet pruned.
 
 A [projected volume](https://kubernetes.io/docs/concepts/storage/projected-volumes) maps several volume sources
 into one directory. Kubernetes adds one by default carrying the service account token, API server CA, and

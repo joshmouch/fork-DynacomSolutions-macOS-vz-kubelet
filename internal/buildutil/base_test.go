@@ -27,9 +27,9 @@ func TestCheckBaseRef(t *testing.T) {
 	for _, bad := range []string{
 		"",
 		"registry.s.dynacom.dev/macos-vz/",
-		"registry.s.dynacom.dev/macos-vz/tahoe",    // untagged
-		"registry.s.dynacom.dev/other/tahoe:1",     // wrong namespace
-		"registry.s.dynacom.dev/macos-vzx/tahoe:1", // prefix lookalike
+		"registry.s.dynacom.dev/macos-vz/tahoe",                  // untagged
+		"registry.s.dynacom.dev/other/tahoe:1",                   // wrong namespace
+		"registry.s.dynacom.dev/macos-vzx/tahoe:1",               // prefix lookalike
 		"evil.example.com/registry.s.dynacom.dev/macos-vz/a:1",   // prefix not at the start
 		"registry.s.dynacom.dev/macos-vz/../other/a:1",           // traversal
 		"registry.s.dynacom.dev/macos-vz/a@sha256:" + hex64("x"), // digest
